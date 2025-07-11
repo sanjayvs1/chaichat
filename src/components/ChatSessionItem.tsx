@@ -1,0 +1,124 @@
+import { useState, memo } from 'react'
+import { MessageSquare, MoreHorizontal, Edit3, Trash2, Copy, Download } from 'lucide-react'
+import type { ChatSession } from '../types/ollama'
+import { Button } from './ui/button'
+import { 
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator
+} from './ui/dropdown-menu'
+import { Input } from './ui/input'
+import { cn } from '@/lib/utils'
+
+interface ChatSessionItemProps {
+  session: ChatSession
+  isActive?: boolean
+  onLoad: (sessionId: string) => void
+  onRename: (sessionId: string, newTitle: string) => void
+  onDelete: (sessionId: string) => void
+  onDuplicate: (sessionId: string) => void
+  onExport?: (sessionId: string) => void
+}
+
+export const ChatSessionItem = memo(function ChatSessionItem({ 
+  session, 
+  isActive, 
+  onLoad, 
+  onRename, 
+  onDelete, 
+  onDuplicate,
+  onExport 
+}: ChatSessionItemProps) {
+  const [isEditing, setIsEditing] = useState(false)
+  const [editTitle, setEditTitle] = useState(session.title)
+
+  const handleSaveEdit = () => {
+    if (editTitle.trim() && editTitle.trim() !== session.title) {
+      onRename(session.id, editTitle.trim())
+    }
+    setIsEditing(false)
+    setEditTitle(session.title)
+  }
+
+  const handleCancelEdit = () => {
+    setIsEditing(false)
+    setEditTitle(session.title)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleSaveEdit()
+    } else if (e.key === 'Escape') {
+      handleCancelEdit()
+    }
+  }
+
+
+
+  return (
+    <div className={cn(
+      "group flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors hover:bg-muted",
+      isActive && "bg-muted"
+    )}>
+      <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+      
+      <div className="flex-1 min-w-0 cursor-pointer" onClick={() => !isEditing && onLoad(session.id)}>
+        {isEditing ? (
+          <Input
+            value={editTitle}
+            onChange={(e) => setEditTitle(e.target.value)}
+            onBlur={handleSaveEdit}
+            onKeyDown={handleKeyDown}
+            className="h-6 text-sm py-0 px-1 -mx-1"
+            autoFocus
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <span className="block truncate font-medium">{session.title}</span>
+        )}
+      </div>
+
+      {!isEditing && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <MoreHorizontal className="h-3 w-3" />
+              <span className="sr-only">Session options</span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuItem onClick={() => setIsEditing(true)}>
+              <Edit3 className="h-4 w-4 mr-2" />
+              Rename
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onDuplicate(session.id)}>
+              <Copy className="h-4 w-4 mr-2" />
+              Duplicate
+            </DropdownMenuItem>
+            {onExport && (
+              <DropdownMenuItem onClick={() => onExport(session.id)}>
+                <Download className="h-4 w-4 mr-2" />
+                Export
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem 
+              onClick={() => onDelete(session.id)}
+              className="text-destructive focus:text-destructive"
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </div>
+  )
+}) 
