@@ -1,3 +1,5 @@
+import { ChatMessage, ChatSession, Character } from './ollama'
+
 export interface ElectronAPI {
   db: {
     createSession: (session: ChatSession) => Promise<string>
@@ -13,8 +15,18 @@ export interface ElectronAPI {
     getSetting: (key: string) => Promise<string | null>
     setSetting: (key: string, value: string) => Promise<void>
     
+    // Character operations
+    createCharacter: (character: Character) => Promise<string>
+    getAllCharacters: () => Promise<Character[]>
+    getCharacter: (characterId: string) => Promise<Character | null>
+    updateCharacter: (characterId: string, updates: Partial<Character>) => Promise<boolean>
+    deleteCharacter: (characterId: string) => Promise<boolean>
+    searchCharacters: (query: string) => Promise<Character[]>
+    
     exportSessions: () => Promise<ExportData>
     importSessions: (data: ExportData) => Promise<number>
+    exportToFile: () => Promise<void>
+    importFromFile: () => Promise<number>
   }
   
   showSaveDialog: (options: Electron.SaveDialogOptions) => Promise<Electron.SaveDialogReturnValue>

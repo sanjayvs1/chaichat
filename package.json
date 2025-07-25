@@ -5,15 +5,22 @@
   "type": "module",
   "main": "electron/main.js",
   "homepage": "./",
+  "author": {
+    "name": "Sanjay Sudhakaran",
+    "email": "sanjayvs2004@gmail.com"
+  },
   "scripts": {
-    "dev": "vite",
+    "start": "concurrently \"vite\" \"wait-on http://localhost:5173 && NODE_ENV=development electron .\"",
+    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && NODE_ENV=development electron .\"",
+    "dev:web": "vite",
+    "dev:electron": "NODE_ENV=development electron .",
     "build": "tsc -b && vite build",
+    "build:electron": "npm run build && electron-builder",
+    "package": "npm run build && electron-builder --publish=never",
+    "dist": "npm run build && electron-builder --publish=never",
     "lint": "eslint .",
     "preview": "vite preview",
-    "electron": "electron .",
-    "electron-dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && NODE_ENV=development electron .\"",
-    "electron-pack": "npm run build && electron-builder",
-    "dist": "npm run build && electron-builder --publish=never"
+    "electron": "electron ."
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.14",
@@ -23,8 +30,7 @@
     "@radix-ui/react-select": "^2.2.5",
     "@radix-ui/react-separator": "^1.1.7",
     "@radix-ui/react-slot": "^1.2.3",
-    "@tanstack/react-router": "^1.127.0",
-    "@tanstack/router-devtools": "^1.127.0",
+    "better-sqlite3": "^12.2.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.525.0",
@@ -102,7 +108,8 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "maintainer": "sanjayvs2004@gmail.com"
     },
     "nsis": {
       "oneClick": false,

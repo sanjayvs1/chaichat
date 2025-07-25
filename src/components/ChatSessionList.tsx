@@ -1,6 +1,6 @@
 import { useState, useRef, useMemo, memo } from 'react'
 import { ChevronDown, ChevronRight, Clock, MessageSquare, SortAsc, Download, Upload, MoreHorizontal, ChevronLeft } from 'lucide-react'
-import type { ChatSession } from '../types/ollama'
+import type { ChatSession, Character } from '../types/ollama'
 import { ChatSessionItem } from './ChatSessionItem'
 import { Button } from './ui/button'
 import { 
@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils'
 interface ChatSessionListProps {
   sessions: ChatSession[]
   currentSessionId?: string | null
+  characters?: Character[]
   getSessionsByDateGroup: () => {
     today: ChatSession[]
     yesterday: ChatSession[]
@@ -39,6 +40,7 @@ const ITEMS_PER_PAGE = 20
 export const ChatSessionList = memo(function ChatSessionList({
   sessions,
   currentSessionId,
+  characters = [],
   getSessionsByDateGroup,
   sortedSessions,
   onLoadSession,
@@ -129,7 +131,7 @@ export const ChatSessionList = memo(function ChatSessionList({
         <Button
           variant="ghost"
           size="sm"
-          className="w-full justify-start h-7 px-3 text-xs font-medium text-muted-foreground hover:text-foreground"
+          className="w-full justify-start h-6 px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
           onClick={() => toggleGroup(groupKey)}
         >
           {isCollapsed ? (
@@ -142,7 +144,7 @@ export const ChatSessionList = memo(function ChatSessionList({
         </Button>
         
         {!isCollapsed && (
-          <div className="space-y-1 ml-2">
+          <div className="space-y-1 ml-1">
             {groupSessions.map((session) => (
               <ChatSessionItem
                 key={session.id}
@@ -153,6 +155,7 @@ export const ChatSessionList = memo(function ChatSessionList({
                 onDelete={onDeleteSession}
                 onDuplicate={onDuplicateSession}
                 onExport={onExportSession}
+                characters={characters}
               />
             ))}
           </div>
@@ -319,7 +322,7 @@ export const ChatSessionList = memo(function ChatSessionList({
 
       {/* Session Display */}
       <div className="flex-1 overflow-y-auto">
-        <div className="space-y-2 p-2">
+        <div className="space-y-1 p-1">
           {viewMode === 'grouped' ? (
             <>
               <SessionGroup 
@@ -360,6 +363,7 @@ export const ChatSessionList = memo(function ChatSessionList({
                   onDelete={onDeleteSession}
                   onDuplicate={onDuplicateSession}
                   onExport={onExportSession}
+                  characters={characters}
                 />
               ))}
             </div>

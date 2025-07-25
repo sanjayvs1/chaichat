@@ -8,7 +8,7 @@ const Sidebar = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "flex h-full w-64 flex-col bg-muted/50 border-r",
+      "flex h-full w-56 flex-col bg-muted/50 border-r",
       className
     )}
     {...props}
@@ -22,7 +22,7 @@ const SidebarHeader = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("flex h-14 items-center px-4 border-b", className)}
+    className={cn("flex h-12 items-center px-3 border-b", className)}
     {...props}
   />
 ))
@@ -34,7 +34,7 @@ const SidebarContent = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("flex-1 overflow-y-auto p-2", className)}
+    className={cn("flex-1 overflow-y-auto p-2 h-full", className)}
     {...props}
   />
 ))
@@ -45,16 +45,18 @@ const SidebarItem = React.forwardRef<
   React.ButtonHTMLAttributes<HTMLButtonElement> & {
     active?: boolean
   }
->(({ className, active, ...props }, ref) => (
+>(({ className, active, children, ...props }, ref) => (
   <button
     ref={ref}
     className={cn(
-      "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors hover:bg-muted",
+      "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
       active && "bg-muted",
       className
     )}
     {...props}
-  />
+  >
+    {children}
+  </button>
 ))
 SidebarItem.displayName = "SidebarItem"
 

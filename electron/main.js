@@ -2,6 +2,7 @@ import { app, BrowserWindow, Menu, shell, ipcMain, dialog } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { promises as fs } from 'fs'
+import DatabaseService from './database.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -130,61 +131,44 @@ function createMenu() {
   Menu.setApplicationMenu(menu)
 }
 
-// Initialize IPC handlers (localStorage-only mode)
+// Initialize IPC handlers with real database
 function setupDatabase() {
-  console.log('Running in localStorage-only mode')
-  setupIpcHandlers()
+  const db = new DatabaseService();
+  setupIpcHandlers(db);
 }
 
-function setupIpcHandlers() {
-  // All database operations will throw errors to trigger localStorage fallback
-  ipcMain.handle('db:createSession', async () => {
-    throw new Error('Database not available - using localStorage')
-  })
+function setupIpcHandlers(db) {
+  // Session operations
+  ipcMain.handle('db:createSession', async (event, session) => db.createSession(session));
+  ipcMain.handle('db:getAllSessions', async () => db.getAllSessions());
+  ipcMain.handle('db:getSession', async (event, sessionId) => db.getSession(sessionId));
+  ipcMain.handle('db:updateSession', async (event, sessionId, updates) => db.updateSession(sessionId, updates));
+  ipcMain.handle('db:deleteSession', async (event, sessionId) => db.deleteSession(sessionId));
+  ipcMain.handle('db:duplicateSession', async (event, sessionId, newSessionId, newTitle) => 
+    db.duplicateSession(sessionId, newSessionId, newTitle)
+  );
 
-  ipcMain.handle('db:getAllSessions', async () => {
-    throw new Error('Database not available - using localStorage')
-  })
+  // Message operations
+  ipcMain.handle('db:addMessages', async (event, sessionId, messages) => db.addMessages(sessionId, messages));
+  ipcMain.handle('db:searchMessages', async (event, query) => db.searchMessages(query));
 
-  ipcMain.handle('db:getSession', async () => {
-    throw new Error('Database not available - using localStorage')
-  })
+  // Settings operations
+  ipcMain.handle('db:getSetting', async (event, key) => db.getSetting(key));
+  ipcMain.handle('db:setSetting', async (event, key, value) => db.setSetting(key, value));
 
-  ipcMain.handle('db:updateSession', async () => {
-    throw new Error('Database not available - using localStorage')
-  })
+  // Character operations
+  ipcMain.handle('db:createCharacter', async (event, character) => db.createCharacter(character));
+  ipcMain.handle('db:getAllCharacters', async () => db.getAllCharacters());
+  ipcMain.handle('db:getCharacter', async (event, characterId) => db.getCharacter(characterId));
+  ipcMain.handle('db:updateCharacter', async (event, characterId, updates) => db.updateCharacter(characterId, updates));
+  ipcMain.handle('db:deleteCharacter', async (event, characterId) => db.deleteCharacter(characterId));
+  ipcMain.handle('db:searchCharacters', async (event, query) => db.searchCharacters(query));
 
-  ipcMain.handle('db:deleteSession', async () => {
-    throw new Error('Database not available - using localStorage')
-  })
-
-  ipcMain.handle('db:duplicateSession', async () => {
-    throw new Error('Database not available - using localStorage')
-  })
-
-  ipcMain.handle('db:addMessages', async () => {
-    throw new Error('Database not available - using localStorage')
-  })
-
-  ipcMain.handle('db:searchMessages', async () => {
-    throw new Error('Database not available - using localStorage')
-  })
-
-  ipcMain.handle('db:getSetting', async () => {
-    throw new Error('Database not available - using localStorage')
-  })
-
-  ipcMain.handle('db:setSetting', async () => {
-    throw new Error('Database not available - using localStorage')
-  })
-
-  ipcMain.handle('db:exportSessions', async () => {
-    throw new Error('Database not available - using localStorage')
-  })
-
-  ipcMain.handle('db:importSessions', async () => {
-    throw new Error('Database not available - using localStorage')
-  })
+  // Export/Import operations
+  ipcMain.handle('db:exportSessions', async () => db.exportSessions());
+  ipcMain.handle('db:importSessions', async (event, data) => db.importSessions(data));
+  ipcMain.handle('db:exportToFile', async () => db.exportToFile());
+  ipcMain.handle('db:importFromFile', async () => db.importFromFile());
 
   // File dialog operations
   ipcMain.handle('dialog:showSaveDialog', async (event, options) => {
@@ -209,6 +193,11 @@ function setupIpcHandlers() {
   })
 }
 
+// Add global handler for unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection:', reason);
+});
+
 // This method will be called when Electron has finished initialization
 app.whenReady().then(() => {
   createWindow()
@@ -224,7 +213,9 @@ app.whenReady().then(() => {
       createWindow()
     }
   })
-})
+}).catch(err => {
+  console.error('Error during app startup:', err);
+});
 
 // Quit when all windows are closed, except on macOS
 app.on('window-all-closed', () => {

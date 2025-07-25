@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+const { contextBridge, ipcRenderer } = require('electron')
 
 // Expose database API to renderer process
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -20,9 +20,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getSetting: (key) => ipcRenderer.invoke('db:getSetting', key),
     setSetting: (key, value) => ipcRenderer.invoke('db:setSetting', key, value),
     
+    // Character operations
+    createCharacter: (character) => ipcRenderer.invoke('db:createCharacter', character),
+    getAllCharacters: () => ipcRenderer.invoke('db:getAllCharacters'),
+    getCharacter: (characterId) => ipcRenderer.invoke('db:getCharacter', characterId),
+    updateCharacter: (characterId, updates) => ipcRenderer.invoke('db:updateCharacter', characterId, updates),
+    deleteCharacter: (characterId) => ipcRenderer.invoke('db:deleteCharacter', characterId),
+    searchCharacters: (query) => ipcRenderer.invoke('db:searchCharacters', query),
+    
     // Export/Import operations
     exportSessions: () => ipcRenderer.invoke('db:exportSessions'),
-    importSessions: (data) => ipcRenderer.invoke('db:importSessions', data)
+    importSessions: (data) => ipcRenderer.invoke('db:importSessions', data),
+    exportToFile: () => ipcRenderer.invoke('db:exportToFile'),
+    importFromFile: () => ipcRenderer.invoke('db:importFromFile')
   },
 
   // File operations for import/export

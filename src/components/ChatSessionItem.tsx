@@ -1,7 +1,9 @@
 import { useState, memo } from 'react'
-import { MessageSquare, MoreHorizontal, Edit3, Trash2, Copy, Download } from 'lucide-react'
-import type { ChatSession } from '../types/ollama'
+import { MessageSquare, MoreHorizontal, Edit3, Trash2, Copy, Download, User } from 'lucide-react'
+import type { ChatSession, Character } from '../types/ollama'
 import { Button } from './ui/button'
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar'
+import { Badge } from './ui/badge'
 import { 
   DropdownMenu,
   DropdownMenuContent,
@@ -15,6 +17,7 @@ import { cn } from '@/lib/utils'
 interface ChatSessionItemProps {
   session: ChatSession
   isActive?: boolean
+  characters?: Character[]
   onLoad: (sessionId: string) => void
   onRename: (sessionId: string, newTitle: string) => void
   onDelete: (sessionId: string) => void
@@ -25,6 +28,7 @@ interface ChatSessionItemProps {
 export const ChatSessionItem = memo(function ChatSessionItem({ 
   session, 
   isActive, 
+  characters = [],
   onLoad, 
   onRename, 
   onDelete, 
@@ -33,6 +37,16 @@ export const ChatSessionItem = memo(function ChatSessionItem({
 }: ChatSessionItemProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [editTitle, setEditTitle] = useState(session.title)
+  const [showMenu, setShowMenu] = useState(false)
+  const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 })
+
+  const sessionCharacter = session.characterId 
+    ? characters.find(c => c.id === session.characterId)
+    : undefined
+
+  const getCharacterInitials = (name: string) => {
+    return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
+  }
 
   const handleSaveEdit = () => {
     if (editTitle.trim() && editTitle.trim() !== session.title) {
@@ -55,16 +69,28 @@ export const ChatSessionItem = memo(function ChatSessionItem({
     }
   }
 
-
-
   return (
-    <div className={cn(
-      "group flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors hover:bg-muted",
-      isActive && "bg-muted"
-    )}>
-      <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+    <div
+      className={cn(
+        "group flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors hover:bg-muted",
+        isActive && "bg-muted"
+      )}
+      onClick={() => !isEditing && onLoad(session.id)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setMenuPosition({ x: e.clientX, y: e.clientY });
+        setShowMenu(true);
+      }}
+    >
+      {sessionCharacter ? (
+        // Remove avatar and character info
+        <></>
+      ) : (
+        // Remove message icon as well
+        <></>
+      )}
       
-      <div className="flex-1 min-w-0 cursor-pointer" onClick={() => !isEditing && onLoad(session.id)}>
+      <div className="flex-1 min-w-0 cursor-pointer">
         {isEditing ? (
           <Input
             value={editTitle}
@@ -76,49 +102,63 @@ export const ChatSessionItem = memo(function ChatSessionItem({
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span className="block truncate font-medium">{session.title}</span>
+          <div className="space-y-1">
+            <span className="block truncate font-medium">{session.title}</span>
+            {/* Remove character name and badge here */}
+          </div>
         )}
       </div>
 
-      {!isEditing && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <MoreHorizontal className="h-3 w-3" />
-              <span className="sr-only">Session options</span>
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-48">
-            <DropdownMenuItem onClick={() => setIsEditing(true)}>
-              <Edit3 className="h-4 w-4 mr-2" />
-              Rename
+      {/* Visible delete button on hover/focus */}
+      <Button
+        variant="destructive"
+        size="sm"
+        className="ml-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity h-6 w-6 p-0"
+        aria-label="Delete session"
+        tabIndex={0}
+        onClick={e => {
+          e.stopPropagation();
+          onDelete(session.id);
+        }}
+      >
+        <Trash2 className="h-3 w-3" />
+      </Button>
+
+      {/* Right-click context menu */}
+      <DropdownMenu open={showMenu} onOpenChange={setShowMenu}>
+        <DropdownMenuTrigger asChild>
+          <div style={{ display: 'none' }} />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          className="w-48"
+          sideOffset={4}
+          style={{ position: 'fixed', left: menuPosition.x, top: menuPosition.y, zIndex: 9999 }}
+        >
+          <DropdownMenuItem onClick={() => setIsEditing(true)}>
+            <Edit3 className="h-4 w-4 mr-2" />
+            Rename
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => onDuplicate(session.id)}>
+            <Copy className="h-4 w-4 mr-2" />
+            Duplicate
+          </DropdownMenuItem>
+          {onExport && (
+            <DropdownMenuItem onClick={() => onExport(session.id)}>
+              <Download className="h-4 w-4 mr-2" />
+              Export
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onDuplicate(session.id)}>
-              <Copy className="h-4 w-4 mr-2" />
-              Duplicate
-            </DropdownMenuItem>
-            {onExport && (
-              <DropdownMenuItem onClick={() => onExport(session.id)}>
-                <Download className="h-4 w-4 mr-2" />
-                Export
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem 
-              onClick={() => onDelete(session.id)}
-              className="text-destructive focus:text-destructive"
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
+          )}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem 
+            onClick={() => onDelete(session.id)}
+            className="text-destructive focus:text-destructive"
+          >
+            <Trash2 className="h-4 w-4 mr-2" />
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   )
 }) 
