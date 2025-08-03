@@ -41,6 +41,10 @@ export class DatabaseService {
     return this.api.addMessages(sessionId, messages)
   }
 
+  async updateMessage(messageId: string, updates: Partial<ChatMessage>): Promise<boolean> {
+    return this.api.updateMessage(messageId, updates)
+  }
+
   async searchMessages(query: string): Promise<Array<{ sessionId: string; message: ChatMessage; sessionTitle: string }>> {
     return this.api.searchMessages(query)
   }

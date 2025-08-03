@@ -10,6 +10,7 @@ export interface ElectronAPI {
     duplicateSession: (sessionId: string, newSessionId: string, newTitle: string) => Promise<ChatSession | null>
     
     addMessages: (sessionId: string, messages: ChatMessage[]) => Promise<void>
+  updateMessage: (messageId: string, updates: Partial<ChatMessage>) => Promise<boolean>
     searchMessages: (query: string) => Promise<SearchResult[]>
     
     getSetting: (key: string) => Promise<string | null>

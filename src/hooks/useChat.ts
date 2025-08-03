@@ -8,7 +8,7 @@ import type {
 import { OllamaService } from "../services/ollama";
 import { dbService } from "../services/database";
 
-const LOCAL_STORAGE_KEY = "chatMessages";
+
 
 export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -53,7 +53,7 @@ export function useChat() {
           // No sessions, create a new one
           const newSession: ChatSession = {
             id: crypto.randomUUID(),
-            title: 'New Conversation',
+            title: "New Conversation",
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             messages: [],
@@ -84,18 +84,7 @@ export function useChat() {
         // Fall through to localStorage fallback
       }
 
-      // Load current messages from localStorage (works in both modes)
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (saved) {
-        try {
-          const parsed: ChatMessage[] = JSON.parse(saved);
-          setMessages(
-            parsed.map((m) => ({ ...m, timestamp: new Date(m.timestamp) }))
-          );
-        } catch (err) {
-          console.error("Failed to parse chat history:", err);
-        }
-      }
+      // Note: localStorage fallback removed - all data is now stored in database
 
       setIsInitialized(true);
     };
@@ -145,27 +134,80 @@ export function useChat() {
   // Autosave: update current session in DB whenever messages change
   useEffect(() => {
     if (!isInitialized || !currentSessionId) return;
-    const save = async () => {
+    
+    // Debounce the save operation to avoid too frequent database writes
+    const saveTimeout = setTimeout(async () => {
       try {
-        await dbService.updateSession(currentSessionId, {
-          messages
+        // Get the current session to compare messages
+        const currentSession = sessions.find(s => s.id === currentSessionId);
+        if (!currentSession) return;
+        
+        // Find new messages that need to be saved
+        const existingMessageIds = new Set(currentSession.messages.map(m => m.id));
+        const newMessages = messages.filter(m => !existingMessageIds.has(m.id));
+        
+        // Find existing messages that might have been updated (e.g., during streaming)
+        const updatedMessages = messages.filter(m => {
+          const existingMessage = currentSession.messages.find(em => em.id === m.id);
+          return existingMessage && (
+            existingMessage.content !== m.content ||
+            existingMessage.timestamp.getTime() !== m.timestamp.getTime() ||
+            existingMessage.characterId !== m.characterId
+          );
         });
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === currentSessionId ? { ...s, messages } : s
-          )
-        );
+        
+        let savedCount = 0;
+        
+        // Save new messages to the database
+        if (newMessages.length > 0) {
+          await dbService.addMessages(currentSessionId, newMessages);
+          savedCount += newMessages.length;
+        }
+        
+        // Update existing messages in the database
+        for (const message of updatedMessages) {
+          const existingMessage = currentSession.messages.find(em => em.id === message.id);
+          if (existingMessage) {
+            const updates: Partial<ChatMessage> = {};
+            if (existingMessage.content !== message.content) updates.content = message.content;
+            if (existingMessage.timestamp.getTime() !== message.timestamp.getTime()) updates.timestamp = message.timestamp;
+            if (existingMessage.characterId !== message.characterId) updates.characterId = message.characterId;
+            
+            if (Object.keys(updates).length > 0) {
+              await dbService.updateMessage(message.id, updates);
+              savedCount++;
+            }
+          }
+        }
+        
+        if (savedCount > 0) {
+          // Update session timestamp
+          await dbService.updateSession(currentSessionId, {
+            updatedAt: new Date().toISOString()
+          });
+          
+          // Update local sessions state
+          setSessions((prev) =>
+            prev.map((s) => 
+              s.id === currentSessionId 
+                ? { ...s, messages, updatedAt: new Date().toISOString() }
+                : s
+            )
+          );
+          
+          console.log(`Saved ${savedCount} messages (${newMessages.length} new, ${updatedMessages.length} updated) to session ${currentSessionId}`);
+        }
       } catch (error) {
+        console.error("Failed to save messages to database:", error);
         // fallback: update local state only
         setSessions((prev) =>
-          prev.map((s) =>
-            s.id === currentSessionId ? { ...s, messages } : s
-          )
+          prev.map((s) => (s.id === currentSessionId ? { ...s, messages } : s))
         );
       }
-    };
-    save();
-  }, [messages, currentSessionId, isInitialized]);
+    }, 500); // 500ms debounce
+    
+    return () => clearTimeout(saveTimeout);
+  }, [messages, currentSessionId, isInitialized, sessions]);
 
   // Persist system prompt when it changes (but not during initialization)
   useEffect(() => {
@@ -249,19 +291,27 @@ export function useChat() {
 
       // Always update updatedAt when a new message is sent
       const nowIso = new Date().toISOString();
+      
+      // If this is the first user message in the session, update the session title
       if (messages.length === 0) {
         const cleanedTitle = content
-          .replace(/[\n\r]+/g, ' ')
-          .replace(/\s+/g, ' ')
+          .replace(/[\n\r]+/g, " ")
+          .replace(/\s+/g, " ")
           .trim()
           .slice(0, 50);
         await dbService.updateSession(currentSessionId, {
-          title: cleanedTitle || 'New Conversation',
+          title: cleanedTitle || "New Conversation",
           updatedAt: nowIso,
         });
         setSessions((prev) =>
           prev.map((s) =>
-            s.id === currentSessionId ? { ...s, title: cleanedTitle || 'New Conversation', updatedAt: nowIso } : s
+            s.id === currentSessionId
+              ? {
+                  ...s,
+                  title: cleanedTitle || "New Conversation",
+                  updatedAt: nowIso,
+                }
+              : s
           )
         );
       } else {
@@ -271,24 +321,6 @@ export function useChat() {
         setSessions((prev) =>
           prev.map((s) =>
             s.id === currentSessionId ? { ...s, updatedAt: nowIso } : s
-          )
-        );
-      }
-
-      // If this is the first user message in the session, update the session title
-      if (messages.length === 0) {
-        const cleanedTitle = content
-          .replace(/[\n\r]+/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim()
-          .slice(0, 50);
-        await dbService.updateSession(currentSessionId, {
-          title: cleanedTitle || 'New Conversation',
-          updatedAt: new Date().toISOString(),
-        });
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === currentSessionId ? { ...s, title: cleanedTitle || 'New Conversation', updatedAt: new Date().toISOString() } : s
           )
         );
       }
@@ -362,8 +394,7 @@ Embody this character completely:
             fullResponse += chunk;
             const now = Date.now();
 
-            // Throttle updates to reduce flickering - increased from 200ms to 500ms
-            if (now - lastUpdate > 500) {
+            if (now - lastUpdate > 100) {
               lastUpdate = now;
               const contentSnapshot = fullResponse;
 
@@ -475,7 +506,15 @@ Embody this character completely:
       // Start streaming
       startStreaming();
     },
-    [selectedModel, isLoading, systemPrompt, messages, selectedCharacter, chatSummary, currentSessionId]
+    [
+      selectedModel,
+      isLoading,
+      systemPrompt,
+      messages,
+      selectedCharacter,
+      chatSummary,
+      currentSessionId,
+    ]
   );
 
   /**
@@ -577,63 +616,13 @@ Embody this character completely:
     return title;
   }, []);
 
-  // Helper function to determine if conversation should be auto-saved
-  const shouldAutoSave = useCallback(
-    (currentMessages: ChatMessage[]) => {
-      // Don't autosave if no messages or only user messages
-      if (currentMessages.length < 2) return false;
-
-      // Don't autosave if the last message isn't from assistant
-      const lastMessage = currentMessages[currentMessages.length - 1];
-      if (lastMessage.role !== "assistant") return false;
-
-      // Don't autosave if it's an error message
-      if (lastMessage.content.startsWith("Error:")) return false;
-
-      // Don't autosave if we already saved at this message count
-      if (currentMessages.length <= lastAutoSavedCountRef.current) return false;
-
-      // Use lightweight signature comparison instead of JSON.stringify
-      const currentSignature = currentMessages
-        .map((m) => `${m.role}:${m.content.length}:${m.content.slice(0, 50)}`)
-        .join("|");
-
-      for (const session of sessions) {
-        // Use cached signature if available
-        let sessionSignature = sessionSignatureCache.current.get(session.id);
-        if (!sessionSignature) {
-          sessionSignature = session.messages
-            .map(
-              (m) => `${m.role}:${m.content.length}:${m.content.slice(0, 50)}`
-            )
-            .join("|");
-          sessionSignatureCache.current.set(session.id, sessionSignature);
-        }
-
-        if (sessionSignature === currentSignature) {
-          return false; // Already exists as a session
-        }
-      }
-
-      return true;
-    },
-    [sessions]
-  );
-
-  // Utility to generate a unique signature for a session's messages
-  function getSessionSignature(messages: ChatMessage[]): string {
-    return messages
-      .map((m) => `${m.role}:${m.content.length}:${m.content.slice(0, 50)}`)
-      .join("|");
-  }
-
   // Remove deduplication, signature, and autoSaveSession logic
 
   // Effect to trigger autosave after assistant responses
   useEffect(() => {
     // Only auto-save if we're not currently loading (response is complete)
     // and if the last message is from assistant
-    if (currentSessionId === null) {
+    if (currentSessionId !== null) {
       if (!isLoading && messages.length > 0) {
         const lastMessage = messages[messages.length - 1];
         if (
@@ -642,9 +631,71 @@ Embody this character completely:
           !lastMessage.content.startsWith("Error:")
         ) {
           // Delay autosave slightly to ensure message is fully processed
-          const autoSaveTimer = setTimeout(() => {
-            // This logic is now handled by the useEffect hook above
-            // autoSaveSession(messages);
+          console.log("Auto-saving session after response completion");
+          const autoSaveTimer = setTimeout(async () => {
+            try {
+              // Get the current session to compare messages
+              const currentSession = sessions.find(s => s.id === currentSessionId);
+              if (!currentSession) return;
+              
+              // Find new messages that need to be saved
+              const existingMessageIds = new Set(currentSession.messages.map(m => m.id));
+              const newMessages = messages.filter(m => !existingMessageIds.has(m.id));
+              
+              // Find existing messages that might have been updated (e.g., during streaming)
+              const updatedMessages = messages.filter(m => {
+                const existingMessage = currentSession.messages.find(em => em.id === m.id);
+                return existingMessage && (
+                  existingMessage.content !== m.content ||
+                  existingMessage.timestamp.getTime() !== m.timestamp.getTime() ||
+                  existingMessage.characterId !== m.characterId
+                );
+              });
+              
+              let savedCount = 0;
+              
+              // Save new messages to the database
+              if (newMessages.length > 0) {
+                await dbService.addMessages(currentSessionId, newMessages);
+                savedCount += newMessages.length;
+              }
+              
+              // Update existing messages in the database
+              for (const message of updatedMessages) {
+                const existingMessage = currentSession.messages.find(em => em.id === message.id);
+                if (existingMessage) {
+                  const updates: Partial<ChatMessage> = {};
+                  if (existingMessage.content !== message.content) updates.content = message.content;
+                  if (existingMessage.timestamp.getTime() !== message.timestamp.getTime()) updates.timestamp = message.timestamp;
+                  if (existingMessage.characterId !== message.characterId) updates.characterId = message.characterId;
+                  
+                  if (Object.keys(updates).length > 0) {
+                    await dbService.updateMessage(message.id, updates);
+                    savedCount++;
+                  }
+                }
+              }
+              
+              if (savedCount > 0) {
+                // Update session timestamp
+                await dbService.updateSession(currentSessionId, {
+                  updatedAt: new Date().toISOString()
+                });
+                
+                // Update local sessions state
+                setSessions((prev) =>
+                  prev.map((s) => 
+                    s.id === currentSessionId 
+                      ? { ...s, messages, updatedAt: new Date().toISOString() }
+                      : s
+                  )
+                );
+                
+                console.log(`Auto-saved ${savedCount} messages (${newMessages.length} new, ${updatedMessages.length} updated) to session ${currentSessionId}`);
+              }
+            } catch (error) {
+              console.error("Failed to auto-save messages:", error);
+            }
           }, 1000); // 1 second delay after response completion
 
           return () => clearTimeout(autoSaveTimer);
@@ -656,34 +707,37 @@ Embody this character completely:
   // New chat: create a new session, set as current, clear messages
   const clearChat = useCallback(async () => {
     const newSession: ChatSession = {
-        id: crypto.randomUUID(),
-      title: 'New Conversation',
-        createdAt: new Date().toISOString(),
+      id: crypto.randomUUID(),
+      title: "New Conversation",
+      createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       messages: [],
-        characterId: selectedCharacter?.id,
-      };
+      characterId: selectedCharacter?.id,
+    };
     await dbService.createSession(newSession);
     setSessions((prev) => [newSession, ...prev]);
     setCurrentSessionId(newSession.id);
     setMessages([]);
     setError(null);
-    localStorage.removeItem(LOCAL_STORAGE_KEY);
   }, [selectedCharacter]);
 
   // Load session: set as current, load its messages
   const loadSession = useCallback(
     async (sessionId: string) => {
       setCurrentSessionId(sessionId);
-      const session = sessions.find((s) => s.id === sessionId) || await dbService.getSession(sessionId);
-        if (session) {
+      const session =
+        sessions.find((s) => s.id === sessionId) ||
+        (await dbService.getSession(sessionId));
+      if (session) {
         setMessages(session.messages);
-          if (session.characterId) {
-          const foundChar = characters.find((c) => c.id === session.characterId);
-            setSelectedCharacter(foundChar);
-          } else {
-            setSelectedCharacter(undefined);
-          }
+        if (session.characterId) {
+          const foundChar = characters.find(
+            (c) => c.id === session.characterId
+          );
+          setSelectedCharacter(foundChar);
+        } else {
+          setSelectedCharacter(undefined);
+        }
       }
     },
     [sessions, characters]
@@ -783,11 +837,16 @@ Embody this character completely:
   const sessionSignatureCache = useRef<Map<string, string>>(new Map());
 
   // getCurrentSessionId: just return currentSessionId
-  const getCurrentSessionId = useCallback(() => currentSessionId, [currentSessionId]);
+  const getCurrentSessionId = useCallback(
+    () => currentSessionId,
+    [currentSessionId]
+  );
 
   // getCurrentSession: return session by id
   const getCurrentSession = useCallback(() => {
-    return currentSessionId ? sessions.find((s) => s.id === currentSessionId) || null : null;
+    return currentSessionId
+      ? sessions.find((s) => s.id === currentSessionId) || null
+      : null;
   }, [currentSessionId, sessions]);
 
   const getSessionsByDateGroup = useCallback(() => {
@@ -830,7 +889,8 @@ Embody this character completely:
     Object.values(groups).forEach((group) => {
       group.sort(
         (a, b) =>
-          new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()
+          new Date(b.updatedAt || b.createdAt).getTime() -
+          new Date(a.updatedAt || a.createdAt).getTime()
       );
     });
 
@@ -844,7 +904,8 @@ Embody this character completely:
         case "date":
           return sorted.sort(
             (a, b) =>
-              new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()
+              new Date(b.updatedAt || b.createdAt).getTime() -
+              new Date(a.updatedAt || a.createdAt).getTime()
           );
         case "name":
           return sorted.sort((a, b) => a.title.localeCompare(b.title));
@@ -990,20 +1051,30 @@ Embody this character completely:
   );
 
   // saveCurrentAsSession: just updates title/characterId for current session
-  const saveCurrentAsSession = useCallback(async (title?: string) => {
-    if (!currentSessionId) return null;
-    await dbService.updateSession(currentSessionId, {
-      title: title || 'Saved Conversation',
-      characterId: selectedCharacter?.id,
-      updatedAt: new Date().toISOString(),
-    });
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.id === currentSessionId ? { ...s, title: title || 'Saved Conversation', characterId: selectedCharacter?.id, updatedAt: new Date().toISOString() } : s
-      )
-    );
-    return currentSessionId;
-  }, [currentSessionId, selectedCharacter]);
+  const saveCurrentAsSession = useCallback(
+    async (title?: string) => {
+      if (!currentSessionId) return null;
+      await dbService.updateSession(currentSessionId, {
+        title: title || "Saved Conversation",
+        characterId: selectedCharacter?.id,
+        updatedAt: new Date().toISOString(),
+      });
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === currentSessionId
+            ? {
+                ...s,
+                title: title || "Saved Conversation",
+                characterId: selectedCharacter?.id,
+                updatedAt: new Date().toISOString(),
+              }
+            : s
+        )
+      );
+      return currentSessionId;
+    },
+    [currentSessionId, selectedCharacter]
+  );
 
   // Character management functions
   const loadCharacters = useCallback(async () => {

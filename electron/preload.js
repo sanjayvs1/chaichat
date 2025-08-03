@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     
     // Message operations
     addMessages: (sessionId, messages) => ipcRenderer.invoke('db:addMessages', sessionId, messages),
+    updateMessage: (messageId, updates) => ipcRenderer.invoke('db:updateMessage', messageId, updates),
     searchMessages: (query) => ipcRenderer.invoke('db:searchMessages', query),
     
     // Settings operations

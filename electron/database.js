@@ -334,6 +334,43 @@ class DatabaseService {
     }
   }
 
+  updateMessage(messageId, updates) {
+    try {
+      const fields = []
+      const values = []
+      
+      if (updates.content !== undefined) {
+        fields.push('content = ?')
+        values.push(updates.content)
+      }
+      
+      if (updates.timestamp !== undefined) {
+        fields.push('timestamp = ?')
+        values.push(updates.timestamp.toISOString())
+      }
+      
+      if (updates.characterId !== undefined) {
+        fields.push('character_id = ?')
+        values.push(updates.characterId)
+      }
+      
+      if (fields.length === 0) return false
+      
+      values.push(messageId)
+      
+      const stmt = this.db.prepare(`
+        UPDATE messages
+        SET ${fields.join(', ')}
+        WHERE id = ?
+      `)
+      
+      return stmt.run(...values).changes > 0
+    } catch (error) {
+      console.error('Error updating message:', error)
+      throw error
+    }
+  }
+
   // Search operations
   searchMessages(query) {
     try {

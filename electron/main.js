@@ -150,6 +150,7 @@ function setupIpcHandlers(db) {
 
   // Message operations
   ipcMain.handle('db:addMessages', async (event, sessionId, messages) => db.addMessages(sessionId, messages));
+  ipcMain.handle('db:updateMessage', async (event, messageId, updates) => db.updateMessage(messageId, updates));
   ipcMain.handle('db:searchMessages', async (event, query) => db.searchMessages(query));
 
   // Settings operations

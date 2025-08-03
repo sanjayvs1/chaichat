@@ -550,14 +550,14 @@ function Index() {
           ) : (
             <>
               {/* Compact Session Indicator */}
-              <SessionIndicator
+              {/* <SessionIndicator
                 currentSession={getCurrentSession()}
                 messageCount={messages.length}
                 onSaveAsSession={saveCurrentAsSession}
                 className="px-4 py-2"
-              />
+              /> */}
               
-              <div className="max-w-4xl w-full mx-auto">
+              <div className="max-w-4xl w-full mx-auto py-4">
                 {messages.map((message, idx) => {
                   const isLastAssistant =
                     message.role === 'assistant' &&

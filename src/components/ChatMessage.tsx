@@ -68,7 +68,7 @@ export const ChatMessage = memo(function ChatMessage({ message, characters }: Ch
       )}
       
       <div className={cn(
-        "flex flex-col space-y-1 max-w-[85%] md:max-w-[75%] min-w-0",
+        "flex flex-col space-y-1 min-w-0",
         isUser ? "items-end" : "items-start"
       )}>
         {/* Message header - more compact */}
@@ -86,8 +86,8 @@ export const ChatMessage = memo(function ChatMessage({ message, characters }: Ch
         <div className={cn(
           "relative group/message rounded-lg border p-3",
           isUser 
-            ? "bg-primary text-primary-foreground border-primary/20" 
-            : "bg-muted/50 border-muted"
+            ? "bg-primary text-primary-foreground border-primary/20 max-w-[85%] md:max-w-[75%]" 
+            : "bg-muted/50 border-muted max-w-[95%] md:max-w-[95%]"
         )}>
           <div className="prose prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
             <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed m-0 p-0 bg-transparent">
