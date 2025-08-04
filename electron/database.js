@@ -3,6 +3,7 @@ import path from 'path'
 import { app, dialog } from 'electron'
 import { fileURLToPath } from 'url'
 import fs from 'fs/promises'
+import crypto from 'crypto'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -152,6 +153,66 @@ class DatabaseService {
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `)
+
+    // Initialize default characters if none exist
+    this.initializeDefaultCharacters()
+  }
+
+  initializeDefaultCharacters() {
+    try {
+      const existingCharacters = this.db.prepare('SELECT COUNT(*) as count FROM characters').get()
+      
+      if (existingCharacters.count === 0) {
+        console.log('Initializing default characters...')
+        
+        const defaultCharacters = [
+          {
+            id: crypto.randomUUID(),
+            name: "Assistant",
+            description: "A helpful AI assistant ready to help with any questions",
+            isDefault: 1,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            id: crypto.randomUUID(),
+            name: "Coding Mentor", 
+            description: "An expert programmer who helps with coding questions and best practices",
+            isDefault: 0,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            id: crypto.randomUUID(),
+            name: "Creative Writer",
+            description: "A creative writing assistant for stories, poems, and imaginative content", 
+            isDefault: 0,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ]
+
+        const stmt = this.db.prepare(`
+          INSERT INTO characters (id, name, description, is_default, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `)
+
+        for (const character of defaultCharacters) {
+          stmt.run(
+            character.id,
+            character.name,
+            character.description,
+            character.isDefault,
+            character.createdAt,
+            character.updatedAt
+          )
+        }
+
+        console.log(`Created ${defaultCharacters.length} default characters`)
+      }
+    } catch (error) {
+      console.error('Error initializing default characters:', error)
+    }
   }
 
   // Session operations

@@ -74,11 +74,6 @@ export function useChat() {
         // Load characters from database
         const dbCharacters = await dbService.getAllCharacters();
         setCharacters(dbCharacters);
-
-        // Create default characters if none exist
-        if (dbCharacters.length === 0) {
-          await createDefaultCharacters();
-        }
       } catch (error) {
         console.error("Failed to load data from database:", error);
         // Fall through to localStorage fallback
@@ -92,44 +87,7 @@ export function useChat() {
     loadData();
   }, []);
 
-  // Create default characters for Electron (database)
-  const createDefaultCharacters = async () => {
-    const defaultCharacters: Character[] = [
-      {
-        id: crypto.randomUUID(),
-        name: "Assistant",
-        description: "A helpful AI assistant ready to help with any questions",
-        isDefault: true,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-      {
-        id: crypto.randomUUID(),
-        name: "Coding Mentor",
-        description:
-          "An expert programmer who helps with coding questions and best practices",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-      {
-        id: crypto.randomUUID(),
-        name: "Creative Writer",
-        description:
-          "A creative writing assistant for stories, poems, and imaginative content",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-    ];
 
-    try {
-      for (const character of defaultCharacters) {
-        await dbService.createCharacter(character);
-      }
-      setCharacters(defaultCharacters);
-    } catch (error) {
-      console.error("Failed to create default characters:", error);
-    }
-  };
 
   // Autosave: update current session in DB whenever messages change
   useEffect(() => {
