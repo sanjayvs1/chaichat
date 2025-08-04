@@ -37,6 +37,227 @@ type SortBy = 'date' | 'name' | 'length'
 
 const ITEMS_PER_PAGE = 20
 
+// Session group configuration
+const GROUP_CONFIG = [
+  { key: 'today', title: 'Today' },
+  { key: 'yesterday', title: 'Yesterday' },
+  { key: 'thisWeek', title: 'This Week' },
+  { key: 'thisMonth', title: 'This Month' },
+  { key: 'older', title: 'Older' }
+] as const
+
+// Memoized SessionGroup component to prevent unnecessary re-renders
+const SessionGroup = memo(({ 
+  title, 
+  sessions, 
+  groupKey,
+  collapsedGroups,
+  toggleGroup,
+  currentSessionId,
+  sessionHandlers,
+  characters
+}: { 
+  title: string
+  sessions: ChatSession[]
+  groupKey: string 
+  collapsedGroups: Set<string>
+  toggleGroup: (groupName: string) => void
+  currentSessionId: string | null
+  sessionHandlers: {
+    onLoad: (sessionId: string) => void
+    onRename: (sessionId: string, newTitle: string) => void
+    onDelete: (sessionId: string) => void
+    onDuplicate: (sessionId: string) => void
+    onExport: (sessionId: string) => void
+  }
+  characters: Character[]
+}) => {
+  if (sessions.length === 0) return null
+  
+  const isCollapsed = collapsedGroups.has(groupKey)
+  
+  return (
+    <div className="space-y-1">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="w-full justify-start h-6 px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+        onClick={() => toggleGroup(groupKey)}
+      >
+        {isCollapsed ? (
+          <ChevronRight className="h-3 w-3 mr-1" />
+        ) : (
+          <ChevronDown className="h-3 w-3 mr-1" />
+        )}
+        {title}
+        <span className="ml-auto text-xs">({sessions.length})</span>
+      </Button>
+      
+      {!isCollapsed && (
+        <div className="space-y-1 ml-1">
+          {sessions.map((session) => (
+            <ChatSessionItem
+              key={session.id}
+              session={session}
+              isActive={currentSessionId === session.id}
+              onLoad={sessionHandlers.onLoad}
+              onRename={sessionHandlers.onRename}
+              onDelete={sessionHandlers.onDelete}
+              onDuplicate={sessionHandlers.onDuplicate}
+              onExport={sessionHandlers.onExport}
+              characters={characters}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+})
+
+// Import/Export controls component
+const ImportExportControls = memo(({ 
+  onImportSessions, 
+  onExportSessions, 
+  isImporting, 
+  fileInputRef 
+}: {
+  onImportSessions?: (file: File) => Promise<boolean>
+  onExportSessions?: () => void
+  isImporting: boolean
+  fileInputRef: React.RefObject<HTMLInputElement | null>
+}) => {
+  if (!onImportSessions && !onExportSessions) return null
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          title="Import/Export options"
+        >
+          <MoreHorizontal className="h-3 w-3" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-40">
+        {onImportSessions && (
+          <DropdownMenuItem 
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isImporting}
+          >
+            <Upload className="h-4 w-4 mr-2" />
+            {isImporting ? 'Importing...' : 'Import'}
+          </DropdownMenuItem>
+        )}
+        {onExportSessions && (
+          <DropdownMenuItem onClick={onExportSessions}>
+            <Download className="h-4 w-4 mr-2" />
+            Export All
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+})
+
+// Sort controls component
+const SortControls = memo(({ 
+  sortBy, 
+  onSortChange 
+}: {
+  sortBy: SortBy
+  onSortChange: (sortBy: SortBy) => void
+}) => {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          title="Sort options"
+        >
+          <SortAsc className="h-3 w-3" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-32">
+        {[
+          { value: 'date', label: 'By Date' },
+          { value: 'name', label: 'By Name' },
+          { value: 'length', label: 'By Length' }
+        ].map(({ value, label }) => (
+          <DropdownMenuItem 
+            key={value}
+            onClick={() => onSortChange(value as SortBy)}
+            className={cn(sortBy === value && "bg-accent")}
+          >
+            {label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+})
+
+// Pagination controls component
+const PaginationControls = memo(({ 
+  currentPage, 
+  totalPages, 
+  totalSessions, 
+  onPageChange 
+}: {
+  currentPage: number
+  totalPages: number
+  totalSessions: number
+  onPageChange: (page: number) => void
+}) => {
+  if (totalPages <= 1) return null
+
+  return (
+    <div className="flex items-center justify-between px-3 py-2 border-t text-xs text-muted-foreground">
+      <span>
+        {((currentPage - 1) * ITEMS_PER_PAGE) + 1}-{Math.min(currentPage * ITEMS_PER_PAGE, totalSessions)} of {totalSessions}
+      </span>
+      
+      <div className="flex items-center gap-1">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          onClick={() => onPageChange(Math.max(1, currentPage - 1))}
+          disabled={currentPage === 1}
+        >
+          <ChevronLeft className="h-3 w-3" />
+        </Button>
+        
+        <span className="px-2">
+          {currentPage} / {totalPages}
+        </span>
+        
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          onClick={() => onPageChange(Math.min(totalPages, currentPage + 1))}
+          disabled={currentPage === totalPages}
+        >
+          <ChevronRight className="h-3 w-3" />
+        </Button>
+      </div>
+    </div>
+  )
+})
+
+// Empty state component
+const EmptyState = memo(() => (
+  <div className="text-center py-8 text-muted-foreground">
+    <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-50" />
+    <p className="text-sm">No chat history yet</p>
+    <p className="text-xs">Start a conversation to see it here</p>
+  </div>
+))
+
 export const ChatSessionList = memo(function ChatSessionList({
   sessions,
   currentSessionId,
@@ -58,14 +279,25 @@ export const ChatSessionList = memo(function ChatSessionList({
   const [currentPage, setCurrentPage] = useState(1)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Memoized session handlers to prevent unnecessary re-renders
+  const sessionHandlers = useMemo(() => ({
+    onLoad: onLoadSession,
+    onRename: onRenameSession,
+    onDelete: onDeleteSession,
+    onDuplicate: onDuplicateSession,
+    onExport: onExportSession || (() => {})
+  }), [onLoadSession, onRenameSession, onDeleteSession, onDuplicateSession, onExportSession])
+
   const toggleGroup = (groupName: string) => {
-    const newCollapsed = new Set(collapsedGroups)
-    if (newCollapsed.has(groupName)) {
-      newCollapsed.delete(groupName)
-    } else {
-      newCollapsed.add(groupName)
-    }
-    setCollapsedGroups(newCollapsed)
+    setCollapsedGroups(prev => {
+      const newCollapsed = new Set(prev)
+      if (newCollapsed.has(groupName)) {
+        newCollapsed.delete(groupName)
+      } else {
+        newCollapsed.add(groupName)
+      }
+      return newCollapsed
+    })
   }
 
   const handleImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -77,10 +309,8 @@ export const ChatSessionList = memo(function ChatSessionList({
       await onImportSessions(file)
     } catch (error) {
       console.error('Import failed:', error)
-      // You could add a toast notification here
     } finally {
       setIsImporting(false)
-      // Reset file input
       if (fileInputRef.current) {
         fileInputRef.current.value = ''
       }
@@ -102,114 +332,22 @@ export const ChatSessionList = memo(function ChatSessionList({
     }
   }, [sortedSessions, sortBy, currentPage, viewMode])
 
-  // Reset page when changing sort or view mode
   const handleSortChange = (newSortBy: SortBy) => {
     setSortBy(newSortBy)
     setCurrentPage(1)
   }
 
   const handleViewModeChange = () => {
-    setViewMode(viewMode === 'grouped' ? 'list' : 'grouped')
+    setViewMode(prev => prev === 'grouped' ? 'list' : 'grouped')
     setCurrentPage(1)
   }
 
-  const SessionGroup = ({ 
-    title, 
-    sessions: groupSessions, 
-    groupKey 
-  }: { 
-    title: string
-    sessions: ChatSession[]
-    groupKey: string 
-  }) => {
-    if (groupSessions.length === 0) return null
-    
-    const isCollapsed = collapsedGroups.has(groupKey)
-    
-    return (
-      <div className="space-y-1">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="w-full justify-start h-6 px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
-          onClick={() => toggleGroup(groupKey)}
-        >
-          {isCollapsed ? (
-            <ChevronRight className="h-3 w-3 mr-1" />
-          ) : (
-            <ChevronDown className="h-3 w-3 mr-1" />
-          )}
-          {title}
-          <span className="ml-auto text-xs">({groupSessions.length})</span>
-        </Button>
-        
-        {!isCollapsed && (
-          <div className="space-y-1 ml-1">
-            {groupSessions.map((session) => (
-              <ChatSessionItem
-                key={session.id}
-                session={session}
-                isActive={currentSessionId === session.id}
-                onLoad={onLoadSession}
-                onRename={onRenameSession}
-                onDelete={onDeleteSession}
-                onDuplicate={onDuplicateSession}
-                onExport={onExportSession}
-                characters={characters}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    )
-  }
-
-  const PaginationControls = () => {
-    if (viewMode !== 'list' || paginatedListSessions.totalPages <= 1) return null
-
-    return (
-      <div className="flex items-center justify-between px-3 py-2 border-t text-xs text-muted-foreground">
-        <span>
-          {((currentPage - 1) * ITEMS_PER_PAGE) + 1}-{Math.min(currentPage * ITEMS_PER_PAGE, paginatedListSessions.totalSessions)} of {paginatedListSessions.totalSessions}
-        </span>
-        
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-            disabled={currentPage === 1}
-          >
-            <ChevronLeft className="h-3 w-3" />
-          </Button>
-          
-          <span className="px-2">
-            {currentPage} / {paginatedListSessions.totalPages}
-          </span>
-          
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            onClick={() => setCurrentPage(p => Math.min(paginatedListSessions.totalPages, p + 1))}
-            disabled={currentPage === paginatedListSessions.totalPages}
-          >
-            <ChevronRight className="h-3 w-3" />
-          </Button>
-        </div>
-      </div>
-    )
+  const handlePageChange = (page: number) => {
+    setCurrentPage(page)
   }
 
   if (sessions.length === 0) {
-    return (
-      <div className="text-center py-8 text-muted-foreground">
-        <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-50" />
-        <p className="text-sm">No chat history yet</p>
-        <p className="text-xs">Start a conversation to see it here</p>
-      </div>
-    )
+    return <EmptyState />
   }
 
   const groupedSessions = getSessionsByDateGroup()
@@ -234,38 +372,12 @@ export const ChatSessionList = memo(function ChatSessionList({
         </h3>
         
         <div className="flex items-center gap-1">
-          {/* Import/Export Menu */}
-          {(onImportSessions || onExportSessions) && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6"
-                  title="Import/Export options"
-                >
-                  <MoreHorizontal className="h-3 w-3" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-40">
-                {onImportSessions && (
-                  <DropdownMenuItem 
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={isImporting}
-                  >
-                    <Upload className="h-4 w-4 mr-2" />
-                    {isImporting ? 'Importing...' : 'Import'}
-                  </DropdownMenuItem>
-                )}
-                {onExportSessions && (
-                  <DropdownMenuItem onClick={onExportSessions}>
-                    <Download className="h-4 w-4 mr-2" />
-                    Export All
-                  </DropdownMenuItem>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
+          <ImportExportControls
+            onImportSessions={onImportSessions}
+            onExportSessions={onExportSessions}
+            isImporting={isImporting}
+            fileInputRef={fileInputRef}
+          />
 
           {/* View Mode Toggle */}
           <Button
@@ -284,38 +396,7 @@ export const ChatSessionList = memo(function ChatSessionList({
           
           {/* Sort Options */}
           {viewMode === 'list' && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6"
-                  title="Sort options"
-                >
-                  <SortAsc className="h-3 w-3" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-32">
-                <DropdownMenuItem 
-                  onClick={() => handleSortChange('date')}
-                  className={cn(sortBy === 'date' && "bg-accent")}
-                >
-                  By Date
-                </DropdownMenuItem>
-                <DropdownMenuItem 
-                  onClick={() => handleSortChange('name')}
-                  className={cn(sortBy === 'name' && "bg-accent")}
-                >
-                  By Name
-                </DropdownMenuItem>
-                <DropdownMenuItem 
-                  onClick={() => handleSortChange('length')}
-                  className={cn(sortBy === 'length' && "bg-accent")}
-                >
-                  By Length
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <SortControls sortBy={sortBy} onSortChange={handleSortChange} />
           )}
         </div>
       </div>
@@ -324,33 +405,19 @@ export const ChatSessionList = memo(function ChatSessionList({
       <div className="flex-1 overflow-y-auto">
         <div className="space-y-1 p-1">
           {viewMode === 'grouped' ? (
-            <>
+            GROUP_CONFIG.map(({ key, title }) => (
               <SessionGroup 
-                title="Today" 
-                sessions={groupedSessions.today} 
-                groupKey="today" 
+                key={key}
+                title={title}
+                sessions={groupedSessions[key]}
+                groupKey={key}
+                collapsedGroups={collapsedGroups}
+                toggleGroup={toggleGroup}
+                currentSessionId={currentSessionId || null}
+                sessionHandlers={sessionHandlers}
+                characters={characters}
               />
-              <SessionGroup 
-                title="Yesterday" 
-                sessions={groupedSessions.yesterday} 
-                groupKey="yesterday" 
-              />
-              <SessionGroup 
-                title="This Week" 
-                sessions={groupedSessions.thisWeek} 
-                groupKey="thisWeek" 
-              />
-              <SessionGroup 
-                title="This Month" 
-                sessions={groupedSessions.thisMonth} 
-                groupKey="thisMonth" 
-              />
-              <SessionGroup 
-                title="Older" 
-                sessions={groupedSessions.older} 
-                groupKey="older" 
-              />
-            </>
+            ))
           ) : (
             <div className="space-y-1">
               {paginatedListSessions.sessions.map((session) => (
@@ -358,11 +425,11 @@ export const ChatSessionList = memo(function ChatSessionList({
                   key={session.id}
                   session={session}
                   isActive={currentSessionId === session.id}
-                  onLoad={onLoadSession}
-                  onRename={onRenameSession}
-                  onDelete={onDeleteSession}
-                  onDuplicate={onDuplicateSession}
-                  onExport={onExportSession}
+                  onLoad={sessionHandlers.onLoad}
+                  onRename={sessionHandlers.onRename}
+                  onDelete={sessionHandlers.onDelete}
+                  onDuplicate={sessionHandlers.onDuplicate}
+                  onExport={sessionHandlers.onExport}
                   characters={characters}
                 />
               ))}
@@ -372,7 +439,12 @@ export const ChatSessionList = memo(function ChatSessionList({
       </div>
 
       {/* Pagination Controls */}
-      <PaginationControls />
+      <PaginationControls
+        currentPage={currentPage}
+        totalPages={paginatedListSessions.totalPages}
+        totalSessions={paginatedListSessions.totalSessions}
+        onPageChange={handlePageChange}
+      />
     </div>
   )
 }) 
