@@ -1,22 +1,20 @@
+import { VisuallyHidden } from '@radix-ui/react-visually-hidden'
+import { AlertCircle, Bot, Github, Menu, Moon, Plus, RefreshCw, Search, Settings, Square, Sun, Users, Wifi, WifiOff, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { RefreshCw, Square, Bot, AlertCircle, Plus, Search, Settings, Github, Moon, Sun, Wifi, WifiOff, Users, Menu } from 'lucide-react'
-import { useChat } from '../hooks/useChat'
-import { ChatMessage } from '../components/ChatMessage'
-import { ChatInput } from '../components/ChatInput'
-import { ModelSelector } from '../components/ModelSelector'
-import { ChatSessionList } from '../components/ChatSessionList'
-import { SessionIndicator } from '../components/SessionIndicator'
 import { CharacterList } from '../components/CharacterList'
 import { CharacterSelector } from '../components/CharacterSelector'
-import { Button } from '../components/ui/button'
-import { Badge } from '../components/ui/badge'
-import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert'
-import { SystemPromptEditor } from '../components/SystemPromptEditor'
+import { ChatInput } from '../components/ChatInput'
+import { ChatMessage } from '../components/ChatMessage'
 import { ChatSearch } from '../components/ChatSearch'
-import { Sidebar, SidebarHeader, SidebarContent, SidebarItem } from '../components/ui/sidebar'
-import { X } from 'lucide-react'
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from '../components/ui/dialog'
-import { VisuallyHidden } from '@radix-ui/react-visually-hidden'
+import { ChatSessionList } from '../components/ChatSessionList'
+import { ModelSelector } from '../components/ModelSelector'
+import { SystemPromptEditor } from '../components/SystemPromptEditor'
+import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert'
+import { Badge } from '../components/ui/badge'
+import { Button } from '../components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../components/ui/dialog'
+import { Sidebar, SidebarContent, SidebarHeader, SidebarItem } from '../components/ui/sidebar'
+import { useChat } from '../hooks/useChat'
 
 export default Index
 
@@ -48,9 +46,6 @@ function Index() {
     exportSessions,
     importSessions,
     exportSession,
-    saveCurrentAsSession,
-    getCurrentSession,
-    // Character-related functions
     characters,
     selectedCharacter,
     isCharactersLoading,
@@ -78,7 +73,6 @@ function Index() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const mainContentRef = useRef<HTMLDivElement>(null)
-  const lastMessageCountRef = useRef<number>(0)
   const previousSessionId = useRef<string | null>(null)
   const lastAssistantMessageRef = useRef<HTMLDivElement>(null)
   const prevMessagesLength = useRef<number>(0)
@@ -403,10 +397,10 @@ function Index() {
             {/* GitHub link */}
             <Button variant="ghost" size="sm" className="h-8 w-8 p-0 md:h-8 md:w-8 touch-manipulation" asChild>
               <a
-                href="https://github.com/ollama/ollama"
+                href="https://github.com/sanjayvs1/chaichat"
                 target="_blank"
                 rel="noopener noreferrer"
-                aria-label="View Ollama on GitHub"
+                aria-label="View ChaiChat on GitHub"
               >
                 <Github className="h-4 w-4" />
               </a>
