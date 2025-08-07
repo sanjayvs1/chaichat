@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, startTransition } from "react";
 import type {
   ChatMessage,
   OllamaModel,
@@ -30,11 +30,13 @@ export function useChat() {
   const [isOllamaConnected, setIsOllamaConnected] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const persistTimeout = useRef<NodeJS.Timeout | null>(null);
+  // removed unused persistTimeout
   const [chatSummary, setChatSummary] = useState<string>("");
+  // Flag to suppress autosave during session switches/initial load
+  const isSwitchingSessionRef = useRef<boolean>(false);
 
   // Track the last auto-saved message count to avoid duplicates
-  const lastAutoSavedCountRef = useRef<number>(0);
+  // removed unused lastAutoSavedCountRef
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 
   // Add this after useState declarations
@@ -44,6 +46,7 @@ export function useChat() {
   useEffect(() => {
     const loadData = async () => {
       try {
+        isSwitchingSessionRef.current = true;
         const dbSessions = await dbService.getAllSessions();
         setSessions(dbSessions);
         if (dbSessions.length > 0) {
@@ -84,7 +87,12 @@ export function useChat() {
       setIsInitialized(true);
     };
 
-    loadData();
+    loadData().finally(() => {
+      // Allow autosave again after initial load settles
+      setTimeout(() => {
+        isSwitchingSessionRef.current = false;
+      }, 0);
+    });
   }, []);
 
 
@@ -92,7 +100,9 @@ export function useChat() {
   // Autosave: update current session in DB whenever messages change
   useEffect(() => {
     if (!isInitialized || !currentSessionId) return;
-    
+    // Skip autosave while streaming or switching sessions
+    if (isLoading || isSwitchingSessionRef.current) return;
+
     // Debounce the save operation to avoid too frequent database writes
     const saveTimeout = setTimeout(async () => {
       try {
@@ -146,9 +156,9 @@ export function useChat() {
           
           // Update local sessions state
           setSessions((prev) =>
-            prev.map((s) => 
-              s.id === currentSessionId 
-                ? { ...s, messages, updatedAt: new Date().toISOString() }
+            prev.map((s) =>
+              s.id === currentSessionId
+                ? { ...s, updatedAt: new Date().toISOString() }
                 : s
             )
           );
@@ -159,13 +169,13 @@ export function useChat() {
         console.error("Failed to save messages to database:", error);
         // fallback: update local state only
         setSessions((prev) =>
-          prev.map((s) => (s.id === currentSessionId ? { ...s, messages } : s))
+          prev.map((s) => (s.id === currentSessionId ? { ...s } : s))
         );
       }
     }, 500); // 500ms debounce
     
     return () => clearTimeout(saveTimeout);
-  }, [messages, currentSessionId, isInitialized, sessions]);
+  }, [messages, currentSessionId, isInitialized, sessions, isLoading]);
 
   // Persist system prompt when it changes (but not during initialization)
   useEffect(() => {
@@ -535,132 +545,9 @@ Embody this character completely:
     [messages, sessions]
   );
 
-  const generateSessionTitle = useCallback((messages: ChatMessage[]) => {
-    const firstUserMessage = messages.find((m) => m.role === "user")?.content;
+  // removed unused generateSessionTitle
 
-    if (!firstUserMessage) {
-      return "New Conversation";
-    }
-
-    // Clean up the message for better titles
-    const title = firstUserMessage
-      .replace(/[^\w\s.,?!-]/g, "") // Remove special chars except basic punctuation
-      .replace(/\s+/g, " ") // Normalize whitespace
-      .trim();
-
-    // If it's a question, keep it as is (up to 50 chars)
-    if (title.endsWith("?") && title.length <= 50) {
-      return title;
-    }
-
-    // If it's too long, try to find a good break point
-    if (title.length > 50) {
-      // Try to break at punctuation
-      const punctuationMatch = title.slice(0, 47).match(/^(.+[.!?])\s/);
-      if (punctuationMatch) {
-        return punctuationMatch[1];
-      }
-
-      // Try to break at a word boundary
-      const wordMatch = title.slice(0, 47).match(/^(.+)\s\w+/);
-      if (wordMatch) {
-        return wordMatch[1] + "...";
-      }
-
-      // Last resort: hard truncate with ellipsis
-      return title.slice(0, 47) + "...";
-    }
-
-    return title;
-  }, []);
-
-  // Remove deduplication, signature, and autoSaveSession logic
-
-  // Effect to trigger autosave after assistant responses
-  useEffect(() => {
-    // Only auto-save if we're not currently loading (response is complete)
-    // and if the last message is from assistant
-    if (currentSessionId !== null) {
-      if (!isLoading && messages.length > 0) {
-        const lastMessage = messages[messages.length - 1];
-        if (
-          lastMessage.role === "assistant" &&
-          lastMessage.content &&
-          !lastMessage.content.startsWith("Error:")
-        ) {
-          // Delay autosave slightly to ensure message is fully processed
-          console.log("Auto-saving session after response completion");
-          const autoSaveTimer = setTimeout(async () => {
-            try {
-              // Get the current session to compare messages
-              const currentSession = sessions.find(s => s.id === currentSessionId);
-              if (!currentSession) return;
-              
-              // Find new messages that need to be saved
-              const existingMessageIds = new Set(currentSession.messages.map(m => m.id));
-              const newMessages = messages.filter(m => !existingMessageIds.has(m.id));
-              
-              // Find existing messages that might have been updated (e.g., during streaming)
-              const updatedMessages = messages.filter(m => {
-                const existingMessage = currentSession.messages.find(em => em.id === m.id);
-                return existingMessage && (
-                  existingMessage.content !== m.content ||
-                  existingMessage.timestamp.getTime() !== m.timestamp.getTime() ||
-                  existingMessage.characterId !== m.characterId
-                );
-              });
-              
-              let savedCount = 0;
-              
-              // Save new messages to the database
-              if (newMessages.length > 0) {
-                await dbService.addMessages(currentSessionId, newMessages);
-                savedCount += newMessages.length;
-              }
-              
-              // Update existing messages in the database
-              for (const message of updatedMessages) {
-                const existingMessage = currentSession.messages.find(em => em.id === message.id);
-                if (existingMessage) {
-                  const updates: Partial<ChatMessage> = {};
-                  if (existingMessage.content !== message.content) updates.content = message.content;
-                  if (existingMessage.timestamp.getTime() !== message.timestamp.getTime()) updates.timestamp = message.timestamp;
-                  if (existingMessage.characterId !== message.characterId) updates.characterId = message.characterId;
-                  
-                  if (Object.keys(updates).length > 0) {
-                    await dbService.updateMessage(message.id, updates);
-                    savedCount++;
-                  }
-                }
-              }
-              
-              if (savedCount > 0) {
-                // Update session timestamp
-                await dbService.updateSession(currentSessionId, {
-                  updatedAt: new Date().toISOString()
-                });
-                
-                // Update local sessions state
-                setSessions((prev) =>
-                  prev.map((s) => 
-                    s.id === currentSessionId 
-                      ? { ...s, messages, updatedAt: new Date().toISOString() }
-                      : s
-                  )
-                );
-                
-                console.log(`Auto-saved ${savedCount} messages (${newMessages.length} new, ${updatedMessages.length} updated) to session ${currentSessionId}`);
-              }
-            } catch (error) {
-              console.error("Failed to auto-save messages:", error);
-            }
-          }, 1000); // 1 second delay after response completion
-
-          return () => clearTimeout(autoSaveTimer);
-        }
-      }
-    }
-  }, [isLoading, messages, currentSessionId]);
+  // Remove deduplication, signature, and duplicate auto-save logic
 
   // New chat: create a new session, set as current, clear messages
   const clearChat = useCallback(async () => {
@@ -682,21 +569,28 @@ Embody this character completely:
   // Load session: set as current, load its messages
   const loadSession = useCallback(
     async (sessionId: string) => {
+      isSwitchingSessionRef.current = true;
       setCurrentSessionId(sessionId);
       const session =
         sessions.find((s) => s.id === sessionId) ||
         (await dbService.getSession(sessionId));
       if (session) {
-        setMessages(session.messages);
-        if (session.characterId) {
-          const foundChar = characters.find(
-            (c) => c.id === session.characterId
-          );
-          setSelectedCharacter(foundChar);
-        } else {
-          setSelectedCharacter(undefined);
-        }
+        startTransition(() => {
+          setMessages(session.messages);
+          if (session.characterId) {
+            const foundChar = characters.find(
+              (c) => c.id === session.characterId
+            );
+            setSelectedCharacter(foundChar);
+          } else {
+            setSelectedCharacter(undefined);
+          }
+        });
       }
+      // Re-enable autosave after this turn of the event loop
+      setTimeout(() => {
+        isSwitchingSessionRef.current = false;
+      }, 0);
     },
     [sessions, characters]
   );

@@ -1,6 +1,6 @@
 import { VisuallyHidden } from '@radix-ui/react-visually-hidden'
 import { AlertCircle, Bot, Github, Menu, Moon, Plus, RefreshCw, Search, Settings, Square, Sun, Users, Wifi, WifiOff, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useMemo, useDeferredValue } from 'react'
 import { CharacterList } from '../components/CharacterList'
 import { CharacterSelector } from '../components/CharacterSelector'
 import { ChatInput } from '../components/ChatInput'
@@ -103,13 +103,11 @@ function Index() {
     if (!container) return
 
     let isSelecting = false
-    let lastY = 0
     let scrollAnimation: number | null = null
 
     function onMouseDown(e: MouseEvent) {
       if (e.target && (e.target as HTMLElement).closest('#main-content')) {
         isSelecting = true
-        lastY = e.clientY
       }
     }
     function onMouseMove(e: MouseEvent) {
@@ -219,6 +217,13 @@ function Index() {
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [showPromptEditor, showSearch, showCharacters, sidebarOpen, clearChat])
 
+  // Defer large messages array to reduce render pressure during updates
+  const deferredMessages = useDeferredValue(messages)
+  const messagesForRender = deferredMessages
+
+  // Memoize current session id string to avoid recomputing during renders
+  const currentSessionId = useMemo(() => getCurrentSessionId(), [getCurrentSessionId])
+
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       {/* Skip Links for Accessibility */}
@@ -294,7 +299,7 @@ function Index() {
             <div className="mt-4">
               <ChatSessionList
                 sessions={sessions}
-                currentSessionId={getCurrentSessionId()}
+                currentSessionId={currentSessionId}
                 characters={characters}
                 getSessionsByDateGroup={getSessionsByDateGroup}
                 sortedSessions={sortedSessions}
@@ -327,13 +332,13 @@ function Index() {
             </Button>
             
             {/* Logo and Nav */}
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
               <div className="flex items-center gap-2">
                 <Bot className="h-5 w-5 text-primary" />
-                <span className="font-semibold hidden sm:inline">ChaiChat</span>
+                <span className="font-semibold hidden sm:inline tracking-tight">ChaiChat</span>
               </div>
               
-              <div className="hidden sm:flex items-center gap-3">
+              <div className="hidden sm:flex items-center gap-2.5">
                 <ModelSelector
                   models={models}
                   selectedModel={selectedModel}
@@ -476,14 +481,14 @@ function Index() {
         )}
 
         {/* Messages Area */}
-        <div 
+         <div 
           ref={messagesContainerRef} 
-          className="flex-1 overflow-y-auto min-h-0 max-h-full"
+          className="flex-1 overflow-y-auto min-h-0 max-h-full bg-background"
           id="main-content"
           tabIndex={-1}
           aria-label="Chat messages"
         >
-          {messages.length === 0 ? (
+          {messagesForRender.length === 0 ? (
             <div className="flex items-center justify-center h-full p-6">
               <div className="text-center space-y-4 max-w-2xl">
                 <div className="w-12 h-12 mx-auto rounded-full bg-muted flex items-center justify-center">
@@ -514,7 +519,7 @@ function Index() {
                 {selectedModel && isOllamaConnected && (
                   <div className="space-y-3">
                     <p className="text-sm text-muted-foreground">Try these examples:</p>
-                    <div className="flex flex-wrap gap-2 justify-center">
+                     <div className="flex flex-wrap gap-2 justify-center">
                       <Badge 
                         variant="outline" 
                         className="cursor-pointer hover:bg-muted" 
@@ -551,12 +556,12 @@ function Index() {
                 className="px-4 py-2"
               /> */}
               
-              <div className="max-w-4xl w-full mx-auto py-4">
-                {messages.map((message, idx) => {
+              <div className="max-w-3xl w-full mx-auto py-2">
+                 {messagesForRender.map((message, idx) => {
                   const isLastAssistant =
                     message.role === 'assistant' &&
                     // Find the last assistant message in the list
-                    messages.slice(idx + 1).findIndex(m => m.role === 'assistant') === -1
+                     messagesForRender.slice(idx + 1).findIndex(m => m.role === 'assistant') === -1
                   return (
                     <div
                       key={message.id}

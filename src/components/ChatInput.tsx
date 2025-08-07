@@ -71,7 +71,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = "Message..." 
   return (
     <div className="relative">
       <div 
-        className="flex items-end gap-3 p-4 bg-background border border-border rounded-xl shadow-sm focus-within:shadow-md focus-within:border-ring transition-all duration-200"
+        className="flex items-end gap-2.5 p-3 bg-muted/30 border border-border rounded-lg focus-within:border-ring transition-colors"
         onClick={handleFocus}
         role="group"
         aria-label="Message input"
@@ -88,7 +88,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = "Message..." 
             aria-label="Type your message"
             aria-describedby="chat-input-help"
             id="chat-input"
-            className="min-h-[36px] max-h-[160px] resize-none border-0 bg-transparent p-2 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent"
+            className="min-h-[36px] max-h-[160px] resize-none border-0 bg-transparent p-2 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground"
             style={{ 
               lineHeight: '1.4',
               overflowY: 'hidden' // Will be set by useEffect
@@ -99,8 +99,8 @@ export function ChatInput({ onSendMessage, disabled, placeholder = "Message..." 
         <Button
           onClick={handleSubmit}
           disabled={!canSend || isOverLimit}
-          size="sm"
-          className="h-9 w-9 shrink-0 rounded-lg transition-all duration-200"
+          size="icon"
+          className="h-9 w-9 shrink-0 rounded-md"
           variant={canSend ? "default" : "ghost"}
           aria-label={disabled ? "Please wait" : canSend ? "Send message" : "Enter a message to send"}
         >
@@ -115,7 +115,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = "Message..." 
       {/* Accessible help text and character count */}
       <div 
         id="chat-input-help" 
-        className="flex justify-between items-center mt-2 px-2 text-xs text-muted-foreground"
+        className="flex justify-between items-center mt-2 px-1.5 text-[11px] text-muted-foreground"
         aria-live="polite"
       >
         <div className="flex items-center gap-4">

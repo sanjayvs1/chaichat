@@ -1,0 +1,92 @@
+name: Release builds
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CI: true
+      # Disable code signing by default so unsigned builds are produced
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      # Avoid notarization attempts on macOS
+      APPLE_ID: ''
+      APPLE_APP_SPECIFIC_PASSWORD: ''
+      # Prevent Windows code signing unless configured
+      WIN_CSC_LINK: ''
+      WIN_CSC_KEY_PASSWORD: ''
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app and package (electron-builder)
+        run: npm run dist
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ runner.os }}
+          path: |
+            release/**/*.AppImage
+            release/**/*.deb
+            release/**/*.dmg
+            release/**/*.exe
+            release/**/*.zip
+            release/**/*.yml
+            release/**/*.blockmap
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Show artifact files
+        run: |
+          echo "Collected artifacts:" && find artifacts -type f -maxdepth 3 | sort
+
+      - name: Create Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/**/*.AppImage
+            artifacts/**/*.deb
+            artifacts/**/*.dmg
+            artifacts/**/*.exe
+            artifacts/**/*.zip
+            artifacts/**/*.yml
+            artifacts/**/*.blockmap
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+

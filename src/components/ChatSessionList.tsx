@@ -215,7 +215,7 @@ const PaginationControls = memo(({
   if (totalPages <= 1) return null
 
   return (
-    <div className="flex items-center justify-between px-3 py-2 border-t text-xs text-muted-foreground">
+    <div className="flex items-center justify-between px-2.5 py-2 border-t text-[11px] text-muted-foreground">
       <span>
         {((currentPage - 1) * ITEMS_PER_PAGE) + 1}-{Math.min(currentPage * ITEMS_PER_PAGE, totalSessions)} of {totalSessions}
       </span>
@@ -366,8 +366,8 @@ export const ChatSessionList = memo(function ChatSessionList({
       )}
 
       {/* Header with controls */}
-      <div className="flex items-center justify-between px-3 py-2 border-b">
-        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+      <div className="flex items-center justify-between px-2.5 py-2 border-b">
+        <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">
           Chat History {sessions.length > ITEMS_PER_PAGE && `(${sessions.length})`}
         </h3>
         
@@ -403,7 +403,7 @@ export const ChatSessionList = memo(function ChatSessionList({
 
       {/* Session Display */}
       <div className="flex-1 overflow-y-auto">
-        <div className="space-y-1 p-1">
+        <div className="space-y-0.5 p-1">
           {viewMode === 'grouped' ? (
             GROUP_CONFIG.map(({ key, title }) => (
               <SessionGroup 

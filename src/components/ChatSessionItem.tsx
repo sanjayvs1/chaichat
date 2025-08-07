@@ -1,9 +1,8 @@
 import { useState, memo } from 'react'
-import { MessageSquare, MoreHorizontal, Edit3, Trash2, Copy, Download, User } from 'lucide-react'
+import { Edit3, Trash2, Copy, Download } from 'lucide-react'
 import type { ChatSession, Character } from '../types/ollama'
 import { Button } from './ui/button'
-import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar'
-import { Badge } from './ui/badge'
+// Avatar imports kept for potential future use; currently not rendered
 import { 
   DropdownMenu,
   DropdownMenuContent,
@@ -44,10 +43,6 @@ export const ChatSessionItem = memo(function ChatSessionItem({
     ? characters.find(c => c.id === session.characterId)
     : undefined
 
-  const getCharacterInitials = (name: string) => {
-    return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
-  }
-
   const handleSaveEdit = () => {
     if (editTitle.trim() && editTitle.trim() !== session.title) {
       onRename(session.id, editTitle.trim())
@@ -69,13 +64,17 @@ export const ChatSessionItem = memo(function ChatSessionItem({
     }
   }
 
+  const handleLoad = () => {
+    if (!isEditing && !isActive) onLoad(session.id)
+  }
+
   return (
     <div
       className={cn(
-        "group flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors hover:bg-muted",
-        isActive && "bg-muted"
+        "group flex items-center gap-2 rounded-md px-2.5 py-2 text-[13px] transition-colors",
+        isActive ? "bg-accent/70 text-foreground" : "hover:bg-muted/60"
       )}
-      onClick={() => !isEditing && onLoad(session.id)}
+      onClick={handleLoad}
       onContextMenu={(e) => {
         e.preventDefault();
         setMenuPosition({ x: e.clientX, y: e.clientY });
@@ -102,7 +101,7 @@ export const ChatSessionItem = memo(function ChatSessionItem({
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <div className="space-y-1">
+          <div className="space-y-0.5">
             <span className="block truncate font-medium">{session.title}</span>
             {/* Remove character name and badge here */}
           </div>
@@ -111,9 +110,9 @@ export const ChatSessionItem = memo(function ChatSessionItem({
 
       {/* Visible delete button on hover/focus */}
       <Button
-        variant="destructive"
-        size="sm"
-        className="ml-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity h-6 w-6 p-0"
+        variant="ghost"
+        size="icon"
+        className="ml-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
         aria-label="Delete session"
         tabIndex={0}
         onClick={e => {
@@ -121,7 +120,7 @@ export const ChatSessionItem = memo(function ChatSessionItem({
           onDelete(session.id);
         }}
       >
-        <Trash2 className="h-3 w-3" />
+        <Trash2 className="h-4 w-4" />
       </Button>
 
       {/* Right-click context menu */}
