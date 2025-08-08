@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, memo } from 'react'
 import { Send, Loader2 } from 'lucide-react'
 import { Button } from './ui/button'
 import { Textarea } from './ui/textarea'
@@ -9,7 +9,7 @@ interface ChatInputProps {
   placeholder?: string
 }
 
-export function ChatInput({ onSendMessage, disabled, placeholder = "Message..." }: ChatInputProps) {
+export const ChatInput = memo(function ChatInput({ onSendMessage, disabled, placeholder = "Message..." }: ChatInputProps) {
   const [message, setMessage] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -163,4 +163,4 @@ export function ChatInput({ onSendMessage, disabled, placeholder = "Message..." 
       </div>
     </div>
   )
-} 
+})

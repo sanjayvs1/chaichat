@@ -5,6 +5,7 @@ import { Textarea } from './ui/textarea'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar'
 import { Save, User, X } from 'lucide-react'
+import { Separator } from './ui/separator'
 import type { Character } from '../types/ollama'
 
 interface CharacterEditorProps {
@@ -28,6 +29,7 @@ export function CharacterEditor({
   })
   
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [previewValid, setPreviewValid] = useState<boolean>(true)
 
   useEffect(() => {
     if (character) {
@@ -74,8 +76,16 @@ export function CharacterEditor({
     onSave(characterData)
   }
 
-
-
+  useEffect(() => {
+    if (!formData.avatar) {
+      setPreviewValid(true)
+      return
+    }
+    const img = new Image()
+    img.onload = () => setPreviewValid(true)
+    img.onerror = () => setPreviewValid(false)
+    img.src = formData.avatar
+  }, [formData.avatar])
   const getInitials = (name: string) => {
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
   }
@@ -103,7 +113,7 @@ export function CharacterEditor({
           {/* Character Preview */}
           <div className="flex items-center gap-4 p-4 bg-muted/50 rounded-lg">
             <Avatar className="h-16 w-16">
-              {formData.avatar ? (
+              {formData.avatar && previewValid ? (
                 <AvatarImage src={formData.avatar} alt={formData.name} />
               ) : (
                 <AvatarFallback className="text-lg">
@@ -139,6 +149,9 @@ export function CharacterEditor({
                 onChange={(e) => setFormData(prev => ({ ...prev, avatar: e.target.value }))}
                 placeholder="https://example.com/avatar.jpg"
               />
+              {!previewValid && formData.avatar && (
+                <p className="text-xs text-destructive">Could not load image from this URL</p>
+              )}
             </div>
           </div>
 
@@ -153,8 +166,17 @@ export function CharacterEditor({
             />
             {errors.description && <p className="text-sm text-destructive">{errors.description}</p>}
           </div>
-
-
+          <Separator />
+          <div className="flex items-center gap-2">
+            <input
+              id="isDefault"
+              type="checkbox"
+              className="h-4 w-4"
+              checked={formData.isDefault}
+              onChange={(e) => setFormData(prev => ({ ...prev, isDefault: e.target.checked }))}
+            />
+            <label htmlFor="isDefault" className="text-sm">Mark as default character</label>
+          </div>
 
           {/* Actions */}
           <div className="flex justify-end gap-2 pt-4">

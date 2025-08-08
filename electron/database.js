@@ -247,9 +247,9 @@ class DatabaseService {
       
       const sessions = sessionsStmt.all()
       
-      // Get messages for each session
+      // Get messages for each session (include character_id for multi-character support)
       const messagesStmt = this.db.prepare(`
-        SELECT id, role, content, timestamp
+        SELECT id, role, content, timestamp, character_id as characterId
         FROM messages
         WHERE session_id = ?
         ORDER BY timestamp ASC
@@ -260,7 +260,8 @@ class DatabaseService {
         characterId: session.characterId || undefined,
         messages: messagesStmt.all(session.id).map(msg => ({
           ...msg,
-          timestamp: new Date(msg.timestamp)
+          timestamp: new Date(msg.timestamp),
+          characterId: msg.characterId || undefined,
         }))
       }))
     } catch (error) {
@@ -280,7 +281,7 @@ class DatabaseService {
       const session = sessionStmt.get(sessionId)
       if (!session) return null
       
-      const messagesStmt = this.db.prepare(`
+    const messagesStmt = this.db.prepare(`
         SELECT id, role, content, timestamp, character_id as characterId
         FROM messages
         WHERE session_id = ?
@@ -356,6 +357,8 @@ class DatabaseService {
         id: newSessionId,
         title: newTitle,
         createdAt: new Date().toISOString(),
+        // Preserve the character association on duplicate
+        characterId: session.characterId || null,
         messages: session.messages
       }
       

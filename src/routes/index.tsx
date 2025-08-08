@@ -1,6 +1,6 @@
 import { VisuallyHidden } from '@radix-ui/react-visually-hidden'
 import { AlertCircle, Bot, Github, Menu, Moon, Plus, RefreshCw, Search, Settings, Square, Sun, Users, Wifi, WifiOff, X } from 'lucide-react'
-import { useEffect, useRef, useState, useMemo, useDeferredValue } from 'react'
+import { useEffect, useRef, useState, useMemo, useDeferredValue, useCallback } from 'react'
 import { CharacterList } from '../components/CharacterList'
 import { CharacterSelector } from '../components/CharacterSelector'
 import { ChatInput } from '../components/ChatInput'
@@ -75,8 +75,9 @@ function Index() {
   const mainContentRef = useRef<HTMLDivElement>(null)
   const previousSessionId = useRef<string | null>(null)
   const lastAssistantMessageRef = useRef<HTMLDivElement>(null)
-  const prevMessagesLength = useRef<number>(0)
-  const prevLastMessageRole = useRef<string | null>(null)
+  const lastMessageRef = useRef<HTMLDivElement>(null)
+  const lastMessageIdRef = useRef<string | null>(null)
+  const lastAssistantIdRef = useRef<string | null>(null)
 
   // Force scroll to bottom when switching sessions
   useEffect(() => {
@@ -90,12 +91,7 @@ function Index() {
     }
   }, [messages, getCurrentSessionId])
 
-  // Improved auto-scroll logic for new/streaming messages
-  useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [messages.length, isLoading])
+  // Remove aggressive auto-scroll during streaming; we'll center on assistant start only
 
   // Auto-scroll when selecting text in chat area
   useEffect(() => {
@@ -150,22 +146,37 @@ function Index() {
     }
   }, [])
 
-  // Scroll to start of LLM (assistant) response when it appears
+  // Defer large messages array to reduce render pressure during updates
+  const deferredMessages = useDeferredValue(messages)
+  const messagesForRender = deferredMessages
+
+  // Center new messages (user or assistant) when they are appended.
+  // Use deferred messagesForRender so refs exist when we measure/scroll.
   useEffect(() => {
-    if (
-      messages.length > 0 &&
-      prevMessagesLength.current === messages.length - 1 &&
-      messages[messages.length - 1].role === 'assistant' &&
-      prevLastMessageRole.current !== 'assistant'
-    ) {
-      // New assistant message added
-      if (lastAssistantMessageRef.current) {
-        lastAssistantMessageRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    if (messagesForRender.length === 0) return
+    const lastMessage = messagesForRender[messagesForRender.length - 1]
+    if (lastMessage.id === lastMessageIdRef.current) return
+
+    const container = messagesContainerRef.current
+    const target = lastMessage.role === 'assistant' ? lastAssistantMessageRef.current : lastMessageRef.current
+    if (container && target) {
+      const containerRect = container.getBoundingClientRect()
+      const targetRect = target.getBoundingClientRect()
+      const currentScrollTop = container.scrollTop
+      const targetTopRelativeToContainer = targetRect.top - containerRect.top + currentScrollTop
+      const desiredTop = Math.max(0, targetTopRelativeToContainer - container.clientHeight / 2)
+      if (typeof container.scrollTo === 'function') {
+        container.scrollTo({ top: desiredTop, behavior: 'smooth' })
+      } else {
+        container.scrollTop = desiredTop
       }
     }
-    prevMessagesLength.current = messages.length
-    prevLastMessageRole.current = messages.length > 0 ? messages[messages.length - 1].role : null
-  }, [messages])
+
+    lastMessageIdRef.current = lastMessage.id
+    if (lastMessage.role === 'assistant') {
+      lastAssistantIdRef.current = lastMessage.id
+    }
+  }, [messagesForRender])
 
   // Theme toggle effect
   useEffect(() => {
@@ -217,9 +228,12 @@ function Index() {
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [showPromptEditor, showSearch, showCharacters, sidebarOpen, clearChat])
 
-  // Defer large messages array to reduce render pressure during updates
-  const deferredMessages = useDeferredValue(messages)
-  const messagesForRender = deferredMessages
+  // Stable onSendMessage to avoid re-rendering ChatInput during streaming
+  const sendMessageRef = useRef(sendMessage)
+  useEffect(() => { sendMessageRef.current = sendMessage }, [sendMessage])
+  const handleSendMessage = useCallback((text: string) => {
+    sendMessageRef.current(text)
+  }, [])
 
   // Memoize current session id string to avoid recomputing during renders
   const currentSessionId = useMemo(() => getCurrentSessionId(), [getCurrentSessionId])
@@ -562,10 +576,15 @@ function Index() {
                     message.role === 'assistant' &&
                     // Find the last assistant message in the list
                      messagesForRender.slice(idx + 1).findIndex(m => m.role === 'assistant') === -1
-                  return (
+                   const isLast = idx === messagesForRender.length - 1
+                   return (
                     <div
                       key={message.id}
-                      ref={isLastAssistant ? lastAssistantMessageRef : undefined}
+                      ref={(el) => {
+                        if (!el) return
+                        if (isLastAssistant) lastAssistantMessageRef.current = el
+                        if (isLast) lastMessageRef.current = el
+                      }}
                     >
                       <ChatMessage 
                         message={message} 
@@ -584,7 +603,7 @@ function Index() {
         <div className="border-t bg-background p-3 flex-shrink-0">
           <div className="max-w-4xl mx-auto">
             <ChatInput
-              onSendMessage={sendMessage}
+              onSendMessage={handleSendMessage}
               disabled={isLoading || !selectedModel || !isOllamaConnected}
               placeholder={
                 !isOllamaConnected 

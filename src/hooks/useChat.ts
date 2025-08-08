@@ -571,9 +571,10 @@ Embody this character completely:
     async (sessionId: string) => {
       isSwitchingSessionRef.current = true;
       setCurrentSessionId(sessionId);
+      // Always fetch fresh from DB to avoid stale in-memory messages
       const session =
-        sessions.find((s) => s.id === sessionId) ||
-        (await dbService.getSession(sessionId));
+        (await dbService.getSession(sessionId)) ||
+        sessions.find((s) => s.id === sessionId);
       if (session) {
         startTransition(() => {
           setMessages(session.messages);
@@ -1031,9 +1032,44 @@ Embody this character completely:
     }
   }, []);
 
-  const selectCharacter = useCallback((character: Character | undefined) => {
+  const selectCharacter = useCallback(async (character: Character | undefined) => {
     setSelectedCharacter(character);
-  }, []);
+    if (!currentSessionId) return;
+
+    const currentSession = sessions.find(s => s.id === currentSessionId);
+    const currentCharacterId = currentSession?.characterId;
+    const nextCharacterId = character?.id;
+
+    // If the current session already has messages and character is changing,
+    // start a fresh session bound to the newly selected character.
+    if (messages.length > 0 && currentCharacterId !== nextCharacterId) {
+      const newSession: ChatSession = {
+        id: crypto.randomUUID(),
+        title: "New Conversation",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [],
+        characterId: nextCharacterId,
+      };
+      try {
+        await dbService.createSession(newSession);
+        setSessions(prev => [newSession, ...prev]);
+        setCurrentSessionId(newSession.id);
+        setMessages([]);
+      } catch (err) {
+        console.error("Failed to create new session on character change:", err);
+      }
+      return;
+    }
+
+    // Otherwise, bind current session to this character
+    try {
+      await dbService.updateSession(currentSessionId, { characterId: nextCharacterId });
+      setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, characterId: nextCharacterId } : s));
+    } catch (err) {
+      console.error('Failed to persist character selection to session:', err);
+    }
+  }, [currentSessionId, sessions, messages.length]);
 
   return {
     messages,

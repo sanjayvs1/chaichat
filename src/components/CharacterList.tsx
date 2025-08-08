@@ -1,12 +1,13 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { ScrollArea } from './ui/scroll-area'
 import { CharacterCard } from './CharacterCard'
 import { CharacterEditor } from './CharacterEditor'
-import { Plus, Search, Users, AlertCircle } from 'lucide-react'
+import { Plus, Search, Users, AlertCircle, SortAsc } from 'lucide-react'
 import { Alert, AlertDescription } from './ui/alert'
 import type { Character } from '../types/ollama'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 
 interface CharacterListProps {
   characters: Character[]
@@ -18,6 +19,7 @@ interface CharacterListProps {
   onDuplicateCharacter: (character: Character) => void
   isLoading?: boolean
   error?: string | null
+  onClose?: () => void
 }
 
 export function CharacterList({
@@ -29,12 +31,14 @@ export function CharacterList({
   onDeleteCharacter,
   onDuplicateCharacter,
   isLoading = false,
-  error = null
+  error = null,
+  onClose
 }: CharacterListProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const [showEditor, setShowEditor] = useState(false)
   const [editingCharacter, setEditingCharacter] = useState<Character | undefined>()
   const [filteredCharacters, setFilteredCharacters] = useState<Character[]>([])
+  const [sortBy, setSortBy] = useState<'date' | 'name'>('date')
 
   // Filter characters based on search query
   useEffect(() => {
@@ -49,6 +53,18 @@ export function CharacterList({
       setFilteredCharacters(filtered)
     }
   }, [characters, searchQuery])
+
+  // Sort characters
+  const displayedCharacters = useMemo(() => {
+    const list = [...filteredCharacters]
+    if (sortBy === 'name') {
+      list.sort((a, b) => a.name.localeCompare(b.name))
+    } else {
+      // date: newest first
+      list.sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
+    }
+    return list
+  }, [filteredCharacters, sortBy])
 
   const handleCreateNew = () => {
     setEditingCharacter(undefined)
@@ -106,13 +122,27 @@ export function CharacterList({
           <Users className="h-5 w-5" />
           <h2 className="text-lg font-semibold">Characters</h2>
           <span className="text-sm text-muted-foreground">
-            ({filteredCharacters.length})
+            ({displayedCharacters.length})
           </span>
         </div>
-        <Button onClick={handleCreateNew} size="sm">
-          <Plus className="h-4 w-4 mr-2" />
-          Create
-        </Button>
+        <div className="flex items-center gap-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-8">
+                <SortAsc className="h-4 w-4 mr-2" />
+                {sortBy === 'date' ? 'By Date' : 'By Name'}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-32">
+              <DropdownMenuItem onClick={() => setSortBy('date')}>By Date</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setSortBy('name')}>By Name</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button onClick={handleCreateNew} size="sm">
+            <Plus className="h-4 w-4 mr-2" />
+            Create
+          </Button>
+        </div>
       </div>
 
       {/* Search */}
@@ -165,12 +195,12 @@ export function CharacterList({
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 auto-rows-fr">
-            {filteredCharacters.map((character) => (
+            {displayedCharacters.map((character) => (
               <CharacterCard
                 key={character.id}
                 character={character}
                 isSelected={selectedCharacter?.id === character.id}
-                onSelect={onSelectCharacter}
+                onSelect={(c) => { onSelectCharacter(c); onClose?.() }}
                 onEdit={handleEdit}
                 onDelete={onDeleteCharacter}
                 onDuplicate={handleDuplicate}

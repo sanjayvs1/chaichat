@@ -1,5 +1,5 @@
 import { useState, memo } from 'react'
-import { Edit3, Trash2, Copy, Download } from 'lucide-react'
+import { Edit3, Trash2, Copy, Download, User } from 'lucide-react'
 import type { ChatSession, Character } from '../types/ollama'
 import { Button } from './ui/button'
 // Avatar imports kept for potential future use; currently not rendered
@@ -12,6 +12,7 @@ import {
 } from './ui/dropdown-menu'
 import { Input } from './ui/input'
 import { cn } from '@/lib/utils'
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar'
 
 interface ChatSessionItemProps {
   session: ChatSession
@@ -81,13 +82,19 @@ export const ChatSessionItem = memo(function ChatSessionItem({
         setShowMenu(true);
       }}
     >
-      {sessionCharacter ? (
-        // Remove avatar and character info
-        <></>
-      ) : (
-        // Remove message icon as well
-        <></>
-      )}
+      <div className="shrink-0">
+        <Avatar className="h-6 w-6">
+          {sessionCharacter?.avatar ? (
+            <AvatarImage src={sessionCharacter.avatar} alt={sessionCharacter.name} />
+          ) : sessionCharacter ? (
+            <AvatarFallback className="text-[10px]">
+              {sessionCharacter.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0,2)}
+            </AvatarFallback>
+          ) : (
+            <AvatarFallback className="text-[10px]"><User className="h-3 w-3" /></AvatarFallback>
+          )}
+        </Avatar>
+      </div>
       
       <div className="flex-1 min-w-0 cursor-pointer">
         {isEditing ? (
@@ -103,7 +110,9 @@ export const ChatSessionItem = memo(function ChatSessionItem({
         ) : (
           <div className="space-y-0.5">
             <span className="block truncate font-medium">{session.title}</span>
-            {/* Remove character name and badge here */}
+            {sessionCharacter && (
+              <span className="text-[11px] text-muted-foreground truncate">{sessionCharacter.name}</span>
+            )}
           </div>
         )}
       </div>
