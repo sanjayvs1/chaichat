@@ -188,8 +188,8 @@ export function useChat() {
     // Debounce the save operation to avoid too frequent database writes
     const saveTimeout = setTimeout(async () => {
       try {
-        // Get the current session to compare messages
-        const currentSession = sessions.find(s => s.id === currentSessionId);
+        // Get the current session from database to get the latest state
+        const currentSession = await dbService.getSession(currentSessionId);
         if (!currentSession) return;
         
         // Find new messages that need to be saved
@@ -236,11 +236,11 @@ export function useChat() {
             updatedAt: new Date().toISOString()
           });
           
-          // Update local sessions state
+          // Update local sessions state without triggering this effect again
           setSessions((prev) =>
             prev.map((s) =>
               s.id === currentSessionId
-                ? { ...s, updatedAt: new Date().toISOString() }
+                ? { ...s, messages: [...messages], updatedAt: new Date().toISOString() }
                 : s
             )
           );
@@ -249,15 +249,11 @@ export function useChat() {
         }
       } catch (error) {
         console.error("Failed to save messages to database:", error);
-        // fallback: update local state only
-        setSessions((prev) =>
-          prev.map((s) => (s.id === currentSessionId ? { ...s } : s))
-        );
       }
     }, 500); // 500ms debounce
     
     return () => clearTimeout(saveTimeout);
-  }, [messages, currentSessionId, isInitialized, sessions, isLoading]);
+  }, [messages, currentSessionId, isInitialized, isLoading]); // Removed 'sessions' dependency to prevent cascading updates
 
   // Persist system prompt when it changes (but not during initialization)
   useEffect(() => {
@@ -287,7 +283,8 @@ export function useChat() {
 
     const saveSessionSettings = async () => {
       try {
-        const currentSession = sessions.find(s => s.id === currentSessionId);
+        // Get the current session from database to get the latest state
+        const currentSession = await dbService.getSession(currentSessionId);
         if (!currentSession) return;
 
         // Check if provider or model has changed
@@ -303,7 +300,7 @@ export function useChat() {
             updatedAt: new Date().toISOString()
           });
           
-          // Update local sessions state
+          // Update local sessions state without triggering cascading effects
           setSessions((prev) =>
             prev.map((s) =>
               s.id === currentSessionId
@@ -327,7 +324,7 @@ export function useChat() {
     // Debounce to avoid too frequent saves
     const timeout = setTimeout(saveSessionSettings, 200);
     return () => clearTimeout(timeout);
-  }, [selectedProvider, selectedModel, currentSessionId, isInitialized, sessions]);
+  }, [selectedProvider, selectedModel, currentSessionId, isInitialized]); // Removed 'sessions' dependency to prevent cascading updates
 
   // Load models on component mount, but only after initialization is complete
   useEffect(() => {

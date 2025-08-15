@@ -68,7 +68,12 @@ function Index() {
   const [showSearch, setShowSearch] = useState(false)
   const [showCharacters, setShowCharacters] = useState(false)
   const [showApiKeys, setShowApiKeys] = useState(false)
-  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth >= 768 // Default to open on desktop (md breakpoint)
+    }
+    return false
+  })
   const [isDark, setIsDark] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('theme') === 'dark' || 
@@ -85,6 +90,8 @@ function Index() {
   const lastMessageRef = useRef<HTMLDivElement>(null)
   const lastMessageIdRef = useRef<string | null>(null)
   const lastAssistantIdRef = useRef<string | null>(null)
+  const lastUserMessageRef = useRef<HTMLDivElement>(null)
+  const lastUserMessageIdRef = useRef<string | null>(null)
 
   // Force scroll to bottom when switching sessions
   useEffect(() => {
@@ -92,7 +99,7 @@ function Index() {
     if (currentSessionId !== previousSessionId.current && messagesEndRef.current) {
       // Session changed, force scroll to bottom
       setTimeout(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'instant' })
+        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' })
       }, 0)
       previousSessionId.current = currentSessionId
     }
@@ -180,29 +187,49 @@ function Index() {
     const lastMessage = messagesForRender[messagesForRender.length - 1]
     if (lastMessage.id === lastMessageIdRef.current) return
 
+    // If an assistant placeholder (empty content) appears, immediately position it at top.
+    if (lastMessage.role === 'assistant' && lastMessage.content === '') {
+      const container = messagesContainerRef.current
+      const target = lastAssistantMessageRef.current
+      if (container && target) {
+        const desiredTop = Math.max(0, target.offsetTop - 20)
+        container.scrollTo({ top: desiredTop, behavior: 'smooth' })
+      }
+
+      // Track so we don't rerun unnecessarily
+      lastMessageIdRef.current = lastMessage.id
+      lastAssistantIdRef.current = lastMessage.id
+      return
+    }
+
     const container = messagesContainerRef.current
     const target = lastMessage.role === 'assistant' ? lastAssistantMessageRef.current : lastMessageRef.current
+    
     if (container && target) {
-      const containerRect = container.getBoundingClientRect()
-      const targetRect = target.getBoundingClientRect()
-      const currentScrollTop = container.scrollTop
-      const targetTopRelativeToContainer = targetRect.top - containerRect.top + currentScrollTop
-      
-      let desiredTop: number
-      if (lastMessage.role === 'assistant') {
-        // For LLM responses, position at the top of the viewport with a small offset
-        const topOffset = 20 // Small padding from the top
-        desiredTop = Math.max(0, targetTopRelativeToContainer - topOffset)
-      } else {
-        // For user messages, center them in the viewport (existing behavior)
-        desiredTop = Math.max(0, targetTopRelativeToContainer - container.clientHeight / 2)
-      }
-      
-      if (typeof container.scrollTo === 'function') {
-        container.scrollTo({ top: desiredTop, behavior: 'smooth' })
-      } else {
-        container.scrollTop = desiredTop
-      }
+      // Use setTimeout to ensure DOM has updated
+      setTimeout(() => {
+        if (lastMessage.role === 'assistant') {
+          // Align assistant response so its very start sits 20px below the top of the container
+          const desiredTop = Math.max(0, target.offsetTop - 200)
+          if (typeof container.scrollTo === 'function') {
+            container.scrollTo({ top: desiredTop, behavior: 'smooth' })
+          } else {
+            container.scrollTop = desiredTop
+          }
+        } else {
+          const containerRect = container.getBoundingClientRect()
+          const targetRect = target.getBoundingClientRect()
+          const currentScrollTop = container.scrollTop
+          const targetTopRelativeToContainer = targetRect.top - containerRect.top + currentScrollTop  
+          // For user messages, scroll to bottom to show the full message
+          const desiredTop = Math.max(0, targetTopRelativeToContainer + targetRect.height - container.clientHeight + 20)
+          if (typeof container.scrollTo === 'function') {
+            container.scrollTo({ top: desiredTop, behavior: 'smooth' })
+          } else {
+            container.scrollTop = desiredTop
+          }
+        }
+      }, 50)
     }
 
     lastMessageIdRef.current = lastMessage.id
@@ -211,35 +238,78 @@ function Index() {
     }
   }, [messagesForRender])
 
-  // During streaming, keep the assistant response positioned at the top for readability
+  // Auto-scroll to user messages when they are sent
   useEffect(() => {
-    if (!isLoading || messagesForRender.length === 0) return
+    if (messagesForRender.length === 0) return
     
-    const lastMessage = messagesForRender[messagesForRender.length - 1]
-    if (lastMessage.role !== 'assistant') return
+    // If the very latest message is not a user message, do not auto-scroll to bottom.
+    const newest = messagesForRender[messagesForRender.length - 1]
+    if (newest.role !== 'user') return
+
+    // Find the last user message
+    const lastUserMessage = newest // because newest is user
+    if (lastUserMessage.id === lastUserMessageIdRef.current) return
 
     const container = messagesContainerRef.current
-    const target = lastAssistantMessageRef.current
+    const target = lastUserMessageRef.current
     
     if (container && target) {
-      const containerRect = container.getBoundingClientRect()
-      const targetRect = target.getBoundingClientRect()
-      const currentScrollTop = container.scrollTop
-      const targetTopRelativeToContainer = targetRect.top - containerRect.top + currentScrollTop
-      
-      // Position at the top with a small offset, but only if we're not already positioned well
-      const topOffset = 20
-      const desiredTop = Math.max(0, targetTopRelativeToContainer - topOffset)
-      const currentOffset = Math.abs(currentScrollTop - desiredTop)
-      
-      // Only adjust if we're significantly off from the desired position (avoid constant micro-adjustments)
-      if (currentOffset > 50) {
+      // Use setTimeout to ensure DOM has updated
+      setTimeout(() => {
+        const containerRect = container.getBoundingClientRect()
+        const targetRect = target.getBoundingClientRect()
+        const currentScrollTop = container.scrollTop
+        const targetTopRelativeToContainer = targetRect.top - containerRect.top + currentScrollTop
+        
+        // For user messages, scroll to show the full message at the bottom with some padding
+        const desiredTop = Math.max(0, targetTopRelativeToContainer + targetRect.height - container.clientHeight + 20)
+        
         if (typeof container.scrollTo === 'function') {
           container.scrollTo({ top: desiredTop, behavior: 'smooth' })
         } else {
           container.scrollTop = desiredTop
         }
-      }
+      }, 50)
+    }
+    
+    lastUserMessageIdRef.current = lastUserMessage.id
+  }, [messagesForRender])
+
+  // Fallback: keep the bottom in view *only* when the latest message isn't an assistant response.
+  useEffect(() => {
+    if (messagesForRender.length === 0) return
+    const lastMsg = messagesForRender[messagesForRender.length - 1]
+    if (lastMsg.role === 'assistant') return // let assistant-specific logic handle scrolling
+
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [messagesForRender.length])
+
+  // During streaming, keep the assistant response positioned at the top for readability
+  // This effect handles the initial positioning when streaming starts
+  useEffect(() => {
+    if (!isLoading || messagesForRender.length === 0) return
+    
+    const lastMessage = messagesForRender[messagesForRender.length - 1]
+    if (lastMessage.role !== 'assistant') return
+    
+    // Only position when the assistant message gets its first content
+    if (lastMessage.content === '') return
+
+    const container = messagesContainerRef.current
+    const target = lastAssistantMessageRef.current
+    
+    if (container && target) {
+      // Use setTimeout to ensure DOM updates are complete
+      setTimeout(() => {
+        const desiredTop = Math.max(0, target.offsetTop - 20)
+        if (typeof container.scrollTo === 'function') {
+          container.scrollTo({ top: desiredTop, behavior: 'smooth' })
+        } else {
+          container.scrollTop = desiredTop
+        }
+      }, 100)
     }
   }, [isLoading, messagesForRender])
 
@@ -341,7 +411,7 @@ function Index() {
         </a>
       </div>
 
-      {/* Mobile Sidebar Overlay */}
+      {/* Sidebar Overlay */}
       {sidebarOpen && (
         <div 
           className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm md:hidden"
@@ -351,62 +421,64 @@ function Index() {
       )}
 
       {/* Sidebar */}
-      <aside className={`${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} fixed inset-y-0 left-0 z-50 transition-transform duration-200 ease-in-out md:relative md:translate-x-0 md:flex h-screen`}>
-        <Sidebar className="w-56 h-screen flex flex-col">
-          <SidebarHeader className="h-12 flex-shrink-0">
-            <Button 
-              className="w-full justify-start gap-2 h-9" 
-              variant="outline"
-              onClick={clearChat}
-            >
-              <Plus className="h-4 w-4" />
-              New chat
-            </Button>
-          </SidebarHeader>
-          
-          <SidebarContent className="flex-1 overflow-y-auto">
-            <div className="space-y-1">
-              <SidebarItem onClick={() => setShowSearch(!showSearch)}>
-                <Search className="h-4 w-4" />
-                Search chats
-              </SidebarItem>
-              
-              <SidebarItem onClick={() => setShowPromptEditor(!showPromptEditor)}>
-                <Settings className="h-4 w-4" />
-                System prompt
-              </SidebarItem>
-              
-              <SidebarItem onClick={() => setShowCharacters(true)}>
-                <Users className="h-4 w-4" />
-                Characters
-              </SidebarItem>
-              
-              <SidebarItem onClick={() => setShowApiKeys(true)}>
-                <Key className="h-4 w-4" />
-                API Keys
-              </SidebarItem>
-            </div>
+      {sidebarOpen && (
+        <aside className="fixed inset-y-0 left-0 z-50 md:relative md:z-auto h-screen transition-all duration-200 ease-in-out">
+          <Sidebar className="w-56 h-screen flex flex-col">
+            <SidebarHeader className="h-12 flex-shrink-0">
+              <Button 
+                className="w-full justify-start gap-2 h-9" 
+                variant="outline"
+                onClick={clearChat}
+              >
+                <Plus className="h-4 w-4" />
+                New chat
+              </Button>
+            </SidebarHeader>
             
-            <div className="mt-4">
-              <ChatSessionList
-                sessions={sessions}
-                currentSessionId={currentSessionId}
-                characters={characters}
-                getSessionsByDateGroup={getSessionsByDateGroup}
-                sortedSessions={sortedSessions}
-                onLoadSession={loadSession}
-                onRenameSession={renameSession}
-                onDeleteSession={deleteSession}
-                onDuplicateSession={duplicateSession}
-                onExportSessions={exportSessions}
-                onImportSessions={importSessions}
-                onExportSession={exportSession}
-                isLoadingSession={isLoadingSession}
-              />
-            </div>
-          </SidebarContent>
-        </Sidebar>
-      </aside>
+            <SidebarContent className="flex-1 overflow-y-auto">
+              <div className="space-y-1">
+                <SidebarItem onClick={() => setShowSearch(!showSearch)}>
+                  <Search className="h-4 w-4" />
+                  Search chats
+                </SidebarItem>
+                
+                <SidebarItem onClick={() => setShowPromptEditor(!showPromptEditor)}>
+                  <Settings className="h-4 w-4" />
+                  System prompt
+                </SidebarItem>
+                
+                <SidebarItem onClick={() => setShowCharacters(true)}>
+                  <Users className="h-4 w-4" />
+                  Characters
+                </SidebarItem>
+                
+                <SidebarItem onClick={() => setShowApiKeys(true)}>
+                  <Key className="h-4 w-4" />
+                  API Keys
+                </SidebarItem>
+              </div>
+              
+              <div className="mt-4">
+                <ChatSessionList
+                  sessions={sessions}
+                  currentSessionId={currentSessionId}
+                  characters={characters}
+                  getSessionsByDateGroup={getSessionsByDateGroup}
+                  sortedSessions={sortedSessions}
+                  onLoadSession={loadSession}
+                  onRenameSession={renameSession}
+                  onDeleteSession={deleteSession}
+                  onDuplicateSession={duplicateSession}
+                  onExportSessions={exportSessions}
+                  onImportSessions={importSessions}
+                  onExportSession={exportSession}
+                  isLoadingSession={isLoadingSession}
+                />
+              </div>
+            </SidebarContent>
+          </Sidebar>
+        </aside>
+      )}
 
       {/* Main Chat Area */}
       <main className="flex-1 flex flex-col min-h-0 max-h-screen">
@@ -416,9 +488,9 @@ function Index() {
             <Button
               variant="ghost"
               size="sm"
-              className="md:hidden h-10 w-10 p-0 touch-manipulation"
-              onClick={() => setSidebarOpen(true)}
-              aria-label="Open sidebar"
+              className="h-10 w-10 p-0 touch-manipulation"
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
             >
               <Menu className="h-4 w-4" />
             </Button>
@@ -708,6 +780,10 @@ function Index() {
                     // Find the last assistant message in the list
                      messagesForRender.slice(idx + 1).findIndex(m => m.role === 'assistant') === -1
                    const isLast = idx === messagesForRender.length - 1
+                   const isLastUser = 
+                     message.role === 'user' &&
+                     // Find the last user message in the list
+                     messagesForRender.slice(idx + 1).findIndex(m => m.role === 'user') === -1
                    return (
                     <div
                       key={message.id}
@@ -715,6 +791,7 @@ function Index() {
                         if (!el) return
                         if (isLastAssistant) lastAssistantMessageRef.current = el
                         if (isLast) lastMessageRef.current = el
+                        if (isLastUser) lastUserMessageRef.current = el
                       }}
                     >
                       <ChatMessage 

@@ -70,19 +70,25 @@ export const ChatMessage = memo(function ChatMessage({ message, characters }: Ch
   }
 
   const Code = ({ inline, className, children }: { inline?: boolean; className?: string; children: any }) => {
-    const codeText = String(children).replace(/\n$/, '')
-    const langClass = className || ''
+    // Inline code is enclosed in backticks in markdown
     if (inline) {
       return (
         <code className="rounded bg-muted px-1.5 py-0.5 text-[12px] font-mono">
-          {codeText}
+          {children}
         </code>
       )
     }
+    // For fenced code blocks we just render the raw text inside a <code> element.
+    // The surrounding <pre> element will be provided by the Pre component below.
+    return <code className={className || ''}>{children}</code>
+  }
+
+  // Dedicated renderer for fenced code blocks to avoid nested <pre>/<div> inside <p> warnings
+  const Pre = ({ className, children }: { className?: string; children: any }) => {
     return (
       <div className="my-2 overflow-hidden rounded-md border">
-        <pre className={`p-3 text-[12.5px] leading-relaxed overflow-auto font-mono ${langClass}`}>
-          <code className={langClass}>{codeText}</code>
+        <pre className={`p-3 text-[12.5px] leading-relaxed overflow-auto font-mono ${className || ''}`}>
+          {children}
         </pre>
       </div>
     )
@@ -129,6 +135,7 @@ export const ChatMessage = memo(function ChatMessage({ message, characters }: Ch
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   components={{
+                    pre: Pre as any,
                     code: Code as any,
                     p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
                     ul: ({ children }) => <ul className="list-disc pl-5 mb-2 space-y-1">{children}</ul>,

@@ -57,7 +57,7 @@ export class GroqService {
     try {
       const client = this.getClient()
       const response = await client.models.list()
-      return response.data.filter(model => model.active)
+      return (response.data as GroqModel[]).filter(model => model.active)
     } catch (error) {
       console.error('Error fetching Groq models:', error)
       throw new Error('Failed to fetch models from Groq. Please check your API key.')

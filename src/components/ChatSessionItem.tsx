@@ -1,7 +1,7 @@
 import { useState, memo } from 'react'
 import { Edit3, Trash2, Copy, Download, User } from 'lucide-react'
 import type { ChatSession, Character } from '../types/ollama'
-import { Button } from './ui/button'
+
 // Avatar imports kept for potential future use; currently not rendered
 import { 
   DropdownMenu,
@@ -121,21 +121,7 @@ export const ChatSessionItem = memo(function ChatSessionItem({
         )}
       </div>
 
-      {/* Visible delete button on hover/focus */}
-      <Button
-        variant="ghost"
-        size="icon"
-        className="ml-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
-        aria-label="Delete session"
-        tabIndex={0}
-        disabled={disabled}
-        onClick={e => {
-          e.stopPropagation();
-          if (!disabled) onDelete(session.id);
-        }}
-      >
-        <Trash2 className="h-4 w-4" />
-      </Button>
+
 
       {/* Right-click context menu */}
       <DropdownMenu open={showMenu} onOpenChange={setShowMenu}>

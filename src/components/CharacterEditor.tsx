@@ -5,7 +5,7 @@ import { Textarea } from './ui/textarea'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar'
 import { Save, User, X } from 'lucide-react'
-import { Separator } from './ui/separator'
+
 import type { Character } from '../types/ollama'
 
 interface CharacterEditorProps {
