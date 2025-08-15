@@ -112,8 +112,11 @@ export function CharacterSelector({
                         )}
                       </div>
                       {character.description && (
-                        <div className="text-xs text-muted-foreground truncate">
-                          {character.description}
+                        <div className="text-xs text-muted-foreground truncate max-w-[200px]">
+                          {character.description.length > 50 
+                            ? `${character.description.substring(0, 50)}...`
+                            : character.description
+                          }
                         </div>
                       )}
                     </div>

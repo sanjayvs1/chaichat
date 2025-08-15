@@ -72,7 +72,7 @@ export const ChatSessionItem = memo(function ChatSessionItem({
   return (
     <div
       className={cn(
-        "group flex items-center gap-2 rounded-md px-2.5 py-2 text-[13px] transition-colors",
+        "group flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] transition-colors",
         isActive ? "bg-accent/70 text-foreground" : "hover:bg-muted/60"
       )}
       onClick={handleLoad}

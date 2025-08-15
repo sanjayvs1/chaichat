@@ -1,5 +1,12 @@
-export interface OllamaModel {
+export type AIProvider = 'ollama' | 'groq'
+
+export interface BaseModel {
   name: string
+  provider: AIProvider
+}
+
+export interface OllamaModel extends BaseModel {
+  provider: 'ollama'
   model: string
   modified_at: string
   size: number
@@ -14,8 +21,25 @@ export interface OllamaModel {
   }
 }
 
+export interface GroqModel extends BaseModel {
+  provider: 'groq'
+  id: string
+  object: string
+  created: number
+  owned_by: string
+  active: boolean
+  context_window: number
+}
+
+export type AIModel = OllamaModel | GroqModel
+
 export interface OllamaModelsResponse {
   models: OllamaModel[]
+}
+
+export interface ProviderStatus {
+  ollama: boolean
+  groq: boolean
 }
 
 export interface ChatMessage {
@@ -69,6 +93,8 @@ export interface ChatSession {
   updatedAt: string // ISO string
   messages: ChatMessage[]
   characterId?: string // Optional character ID for character-based sessions
+  provider?: AIProvider // Optional provider saved with the session
+  selectedModel?: string // Optional model saved with the session
 } 
 
 // Represents a character with name and description

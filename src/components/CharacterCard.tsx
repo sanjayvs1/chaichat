@@ -40,71 +40,73 @@ export function CharacterCard({
   }
 
   return (
-    <Card className={`cursor-pointer transition-all hover:shadow-md flex flex-col h-full ${isSelected ? 'ring-2 ring-primary' : ''}`}>
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between">
-          <div className="flex flex-wrap items-center gap-3">
-            <Avatar className="h-10 w-10">
+    <Card className={`cursor-pointer transition-all hover:shadow-md ${isSelected ? 'ring-2 ring-primary' : ''}`}>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3 flex-1 min-w-0">
+            <Avatar className="h-10 w-10 flex-shrink-0">
               {character.avatar ? (
                 <AvatarImage src={character.avatar} alt={character.name} />
               ) : (
                 <AvatarFallback>{getInitials(character.name)}</AvatarFallback>
               )}
             </Avatar>
-            <div>
-              <CardTitle className="text-lg flex items-center gap-2">
-                {character.name}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <CardTitle className="text-base truncate">
+                  {character.name}
+                </CardTitle>
                 {character.isDefault && (
-                  <Badge variant="secondary" className="text-xs">
+                  <Badge variant="secondary" className="text-xs flex-shrink-0">
                     Default
                   </Badge>
                 )}
-              </CardTitle>
-              <CardDescription className="text-sm">
+              </div>
+              <CardDescription className="text-sm line-clamp-2">
                 {character.description}
               </CardDescription>
             </div>
           </div>
           
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => onEdit(character)}>
-                <Edit className="h-4 w-4 mr-2" />
-                Edit
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onDuplicate(character)}>
-                <Copy className="h-4 w-4 mr-2" />
-                Duplicate
-              </DropdownMenuItem>
-              {!character.isDefault && (
-                <DropdownMenuItem 
-                  onClick={() => onDelete(character.id)}
-                  className="text-destructive"
-                >
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  Delete
+          <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+            <Button 
+              onClick={handleSelect}
+              disabled={isLoading}
+              size="sm"
+              variant={isSelected ? "default" : "outline"}
+            >
+              <MessageCircle className="h-4 w-4 mr-2" />
+              {isSelected ? 'Selected' : 'Chat with'}
+            </Button>
+            
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => onEdit(character)}>
+                  <Edit className="h-4 w-4 mr-2" />
+                  Edit
                 </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+                <DropdownMenuItem onClick={() => onDuplicate(character)}>
+                  <Copy className="h-4 w-4 mr-2" />
+                  Duplicate
+                </DropdownMenuItem>
+                {!character.isDefault && (
+                  <DropdownMenuItem 
+                    onClick={() => onDelete(character.id)}
+                    className="text-destructive"
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
-      </CardHeader>
-      
-      <CardContent className="pt-0 flex-1 flex flex-col justify-end">
-        <Button 
-          onClick={handleSelect}
-          disabled={isLoading}
-          className="w-full"
-          variant={isSelected ? "default" : "outline"}
-        >
-          <MessageCircle className="h-4 w-4 mr-2" />
-          {isSelected ? 'Selected' : 'Chat with'}
-        </Button>
       </CardContent>
     </Card>
   )

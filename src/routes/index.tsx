@@ -1,5 +1,5 @@
 import { VisuallyHidden } from '@radix-ui/react-visually-hidden'
-import { AlertCircle, Bot, Github, Menu, Moon, Plus, RefreshCw, Search, Settings, Square, Sun, Users, Wifi, WifiOff, X } from 'lucide-react'
+import { AlertCircle, Bot, Github, Menu, Moon, Plus, RefreshCw, Search, Settings, Square, Sun, Users, Wifi, WifiOff, X, Key } from 'lucide-react'
 import { useEffect, useRef, useState, useMemo, useDeferredValue, useCallback } from 'react'
 import { CharacterList } from '../components/CharacterList'
 import { CharacterSelector } from '../components/CharacterSelector'
@@ -8,6 +8,8 @@ import { ChatMessage } from '../components/ChatMessage'
 import { ChatSearch } from '../components/ChatSearch'
 import { ChatSessionList } from '../components/ChatSessionList'
 import { ModelSelector } from '../components/ModelSelector'
+import { ProviderSelector } from '../components/ProviderSelector'
+import { ApiKeyManager } from '../components/ApiKeyManager'
 import { SystemPromptEditor } from '../components/SystemPromptEditor'
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert'
 import { Badge } from '../components/ui/badge'
@@ -25,15 +27,19 @@ function Index() {
     models,
     selectedModel,
     setSelectedModel,
+    selectedProvider,
+    handleProviderChange: hookHandleProviderChange,
     isLoading,
     isModelsLoading,
     error,
-    isOllamaConnected,
+
+    providerStatus,
     sendMessage,
     clearChat,
     loadSession,
     stopGeneration,
     loadModels,
+    checkConnections,
     systemPrompt,
     setSystemPrompt,
     searchChats,
@@ -50,7 +56,6 @@ function Index() {
     selectedCharacter,
     isCharactersLoading,
     charactersError,
-
     createCharacter,
     updateCharacter,
     deleteCharacter,
@@ -61,6 +66,7 @@ function Index() {
   const [showPromptEditor, setShowPromptEditor] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
   const [showCharacters, setShowCharacters] = useState(false)
+  const [showApiKeys, setShowApiKeys] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [isDark, setIsDark] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -150,8 +156,9 @@ function Index() {
   const deferredMessages = useDeferredValue(messages)
   const messagesForRender = deferredMessages
 
-  // Center new messages (user or assistant) when they are appended.
-  // Use deferred messagesForRender so refs exist when we measure/scroll.
+  // Handle scrolling for new messages when they are appended.
+  // For LLM responses, position them at the top of the viewport for better readability.
+  // For user messages, center them in the viewport.
   useEffect(() => {
     if (messagesForRender.length === 0) return
     const lastMessage = messagesForRender[messagesForRender.length - 1]
@@ -164,7 +171,17 @@ function Index() {
       const targetRect = target.getBoundingClientRect()
       const currentScrollTop = container.scrollTop
       const targetTopRelativeToContainer = targetRect.top - containerRect.top + currentScrollTop
-      const desiredTop = Math.max(0, targetTopRelativeToContainer - container.clientHeight / 2)
+      
+      let desiredTop: number
+      if (lastMessage.role === 'assistant') {
+        // For LLM responses, position at the top of the viewport with a small offset
+        const topOffset = 20 // Small padding from the top
+        desiredTop = Math.max(0, targetTopRelativeToContainer - topOffset)
+      } else {
+        // For user messages, center them in the viewport (existing behavior)
+        desiredTop = Math.max(0, targetTopRelativeToContainer - container.clientHeight / 2)
+      }
+      
       if (typeof container.scrollTo === 'function') {
         container.scrollTo({ top: desiredTop, behavior: 'smooth' })
       } else {
@@ -177,6 +194,38 @@ function Index() {
       lastAssistantIdRef.current = lastMessage.id
     }
   }, [messagesForRender])
+
+  // During streaming, keep the assistant response positioned at the top for readability
+  useEffect(() => {
+    if (!isLoading || messagesForRender.length === 0) return
+    
+    const lastMessage = messagesForRender[messagesForRender.length - 1]
+    if (lastMessage.role !== 'assistant') return
+
+    const container = messagesContainerRef.current
+    const target = lastAssistantMessageRef.current
+    
+    if (container && target) {
+      const containerRect = container.getBoundingClientRect()
+      const targetRect = target.getBoundingClientRect()
+      const currentScrollTop = container.scrollTop
+      const targetTopRelativeToContainer = targetRect.top - containerRect.top + currentScrollTop
+      
+      // Position at the top with a small offset, but only if we're not already positioned well
+      const topOffset = 20
+      const desiredTop = Math.max(0, targetTopRelativeToContainer - topOffset)
+      const currentOffset = Math.abs(currentScrollTop - desiredTop)
+      
+      // Only adjust if we're significantly off from the desired position (avoid constant micro-adjustments)
+      if (currentOffset > 50) {
+        if (typeof container.scrollTo === 'function') {
+          container.scrollTo({ top: desiredTop, behavior: 'smooth' })
+        } else {
+          container.scrollTop = desiredTop
+        }
+      }
+    }
+  }, [isLoading, messagesForRender])
 
   // Theme toggle effect
   useEffect(() => {
@@ -220,13 +269,14 @@ function Index() {
         if (showPromptEditor) setShowPromptEditor(false)
         else if (showSearch) setShowSearch(false)
         else if (showCharacters) setShowCharacters(false)
+        else if (showApiKeys) setShowApiKeys(false)
         else if (sidebarOpen) setSidebarOpen(false)
       }
     }
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [showPromptEditor, showSearch, showCharacters, sidebarOpen, clearChat])
+  }, [showPromptEditor, showSearch, showCharacters, showApiKeys, sidebarOpen, clearChat])
 
   // Stable onSendMessage to avoid re-rendering ChatInput during streaming
   const sendMessageRef = useRef(sendMessage)
@@ -234,6 +284,19 @@ function Index() {
   const handleSendMessage = useCallback((text: string) => {
     sendMessageRef.current(text)
   }, [])
+
+  // Handle provider change - automatically select last used model for that provider
+  // If there are existing messages, create a new session to preserve the current one
+  const handleProviderChange = useCallback((provider: typeof selectedProvider) => {
+    if (messages.length > 0 && provider !== selectedProvider) {
+      // Create new session with the new provider
+      clearChat().then(() => {
+        hookHandleProviderChange(provider)
+      })
+    } else {
+      hookHandleProviderChange(provider)
+    }
+  }, [hookHandleProviderChange, messages.length, selectedProvider, clearChat])
 
   // Memoize current session id string to avoid recomputing during renders
   const currentSessionId = useMemo(() => getCurrentSessionId(), [getCurrentSessionId])
@@ -308,6 +371,11 @@ function Index() {
                   ⌘,
                 </kbd>
               </SidebarItem>
+              
+              <SidebarItem onClick={() => setShowApiKeys(true)}>
+                <Key className="h-4 w-4" />
+                API Keys
+              </SidebarItem>
             </div>
             
             <div className="mt-4">
@@ -353,8 +421,14 @@ function Index() {
               </div>
               
               <div className="hidden sm:flex items-center gap-2.5">
+                <ProviderSelector
+                  selectedProvider={selectedProvider}
+                  onProviderChange={handleProviderChange}
+                  disabled={isLoading}
+                />
+                
                 <ModelSelector
-                  models={models}
+                  models={models.filter(m => m.provider === selectedProvider)}
                   selectedModel={selectedModel}
                   onModelChange={setSelectedModel}
                   loading={isModelsLoading}
@@ -374,26 +448,43 @@ function Index() {
           <div className="flex items-center gap-1">
             {/* Connection status with better accessibility */}
             <div className="flex items-center gap-2 mr-2">
-              {isOllamaConnected ? (
-                <div className="flex items-center gap-1">
-                  <Wifi className="h-4 w-4 text-emerald-600" />
-                  <span className="sr-only">Connected to Ollama</span>
-                </div>
+              {selectedProvider === 'ollama' ? (
+                providerStatus.ollama ? (
+                  <div className="flex items-center gap-1">
+                    <Wifi className="h-4 w-4 text-emerald-600" />
+                    <span className="sr-only">Connected to Ollama</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1">
+                    <WifiOff className="h-4 w-4 text-destructive" />
+                    <span className="sr-only">Disconnected from Ollama</span>
+                  </div>
+                )
               ) : (
-                <div className="flex items-center gap-1">
-                  <WifiOff className="h-4 w-4 text-destructive" />
-                  <span className="sr-only">Disconnected from Ollama</span>
-                </div>
+                providerStatus.groq ? (
+                  <div className="flex items-center gap-1">
+                    <Wifi className="h-4 w-4 text-purple-600" />
+                    <span className="sr-only">Connected to Groq</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1">
+                    <WifiOff className="h-4 w-4 text-destructive" />
+                    <span className="sr-only">Disconnected from Groq</span>
+                  </div>
+                )
               )}
             </div>
             
             <Button
-              onClick={loadModels}
+              onClick={() => {
+                loadModels()
+                checkConnections()
+              }}
               disabled={isModelsLoading}
               variant="ghost"
               size="sm"
               className="h-8 w-8 p-0 md:h-8 md:w-8 touch-manipulation"
-              aria-label="Refresh models"
+              aria-label="Refresh models and connections"
             >
               <RefreshCw className={`h-4 w-4 ${isModelsLoading ? 'animate-spin' : ''}`} />
             </Button>
@@ -441,8 +532,13 @@ function Index() {
 
         {/* Mobile Model/Character Selectors */}
         <div className="sm:hidden flex flex-col gap-2 p-3 border-b bg-muted/20">
+          <ProviderSelector
+            selectedProvider={selectedProvider}
+            onProviderChange={handleProviderChange}
+            disabled={isLoading}
+          />
           <ModelSelector
-            models={models}
+            models={models.filter(m => m.provider === selectedProvider)}
             selectedModel={selectedModel}
             onModelChange={setSelectedModel}
             loading={isModelsLoading}
@@ -510,8 +606,8 @@ function Index() {
                 </div>
                 <div className="space-y-2">
                   <h1 className="text-xl font-semibold">
-                    {!isOllamaConnected 
-                      ? 'Connect to Ollama'
+                    {!providerStatus[selectedProvider]
+                      ? `Connect to ${selectedProvider === 'groq' ? 'Groq' : 'Ollama'}`
                       : selectedCharacter
                         ? `Chat with ${selectedCharacter.name}`
                         : selectedModel 
@@ -520,8 +616,10 @@ function Index() {
                     }
                   </h1>
                   <p className="text-muted-foreground text-sm">
-                    {!isOllamaConnected 
-                      ? 'Make sure Ollama is running on 127.0.0.1:11434'
+                    {!providerStatus[selectedProvider]
+                      ? selectedProvider === 'groq' 
+                        ? 'Set your Groq API key in settings'
+                        : 'Make sure Ollama is running on 127.0.0.1:11434'
                       : selectedCharacter
                         ? selectedCharacter.description
                         : selectedModel 
@@ -530,7 +628,7 @@ function Index() {
                     }
                   </p>
                 </div>
-                {selectedModel && isOllamaConnected && (
+                {selectedModel && providerStatus[selectedProvider] && (
                   <div className="space-y-3">
                     <p className="text-sm text-muted-foreground">Try these examples:</p>
                      <div className="flex flex-wrap gap-2 justify-center">
@@ -604,10 +702,10 @@ function Index() {
           <div className="max-w-4xl mx-auto">
             <ChatInput
               onSendMessage={handleSendMessage}
-              disabled={isLoading || !selectedModel || !isOllamaConnected}
+              disabled={isLoading || !selectedModel || !providerStatus[selectedProvider]}
               placeholder={
-                !isOllamaConnected 
-                  ? "Ollama is not connected..." 
+                !providerStatus[selectedProvider]
+                  ? `${selectedProvider === 'groq' ? 'Groq API key required' : 'Ollama is not connected'}...`
                   : !selectedModel 
                     ? "Select a model first..."
                     : "Message..."
@@ -637,6 +735,31 @@ function Index() {
             isLoading={isCharactersLoading}
             error={charactersError}
           />
+        </DialogContent>
+      </Dialog>
+
+      {/* API Key Management Dialog */}
+      <Dialog open={showApiKeys} onOpenChange={setShowApiKeys}>
+        <DialogContent className="max-w-md">
+          <DialogTitle asChild>
+            <VisuallyHidden>API Key Management</VisuallyHidden>
+          </DialogTitle>
+          <DialogDescription asChild>
+            <VisuallyHidden>Manage API keys for AI providers.</VisuallyHidden>
+          </DialogDescription>
+          <div className="space-y-6">
+            <div className="flex items-center gap-2">
+              <Key className="h-5 w-5" />
+              <h2 className="text-lg font-semibold">API Keys</h2>
+            </div>
+            
+            <ApiKeyManager 
+              onApiKeySet={() => {
+                checkConnections()
+                loadModels()
+              }}
+            />
+          </div>
         </DialogContent>
       </Dialog>
     </div>

@@ -56,6 +56,8 @@ class DatabaseService {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         character_id TEXT,
+        provider TEXT,
+        selected_model TEXT,
         FOREIGN KEY (character_id) REFERENCES characters (id) ON DELETE SET NULL
       )
     `)
@@ -90,6 +92,18 @@ class DatabaseService {
     const hasCharacterId = sessionColumns.some(col => col.name === 'character_id');
     if (!hasCharacterId) {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN character_id TEXT`);
+    }
+
+    // Ensure provider column exists in sessions table (migration for session provider/model persistence)
+    const hasProvider = sessionColumns.some(col => col.name === 'provider');
+    if (!hasProvider) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN provider TEXT`);
+    }
+
+    // Ensure selected_model column exists in sessions table (migration for session provider/model persistence)
+    const hasSelectedModel = sessionColumns.some(col => col.name === 'selected_model');
+    if (!hasSelectedModel) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN selected_model TEXT`);
     }
 
     // Ensure character_id column exists in messages table (migration for multi-character support)
@@ -218,12 +232,20 @@ class DatabaseService {
   // Session operations
   createSession(session) {
     const stmt = this.db.prepare(`
-      INSERT INTO sessions (id, title, created_at, updated_at, character_id)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO sessions (id, title, created_at, updated_at, character_id, provider, selected_model)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `)
     
     try {
-      stmt.run(session.id, session.title, session.createdAt, new Date().toISOString(), session.characterId || null)
+      stmt.run(
+        session.id, 
+        session.title, 
+        session.createdAt, 
+        new Date().toISOString(), 
+        session.characterId || null,
+        session.provider || null,
+        session.selectedModel || null
+      )
       
       // Insert messages for this session
       if (session.messages && session.messages.length > 0) {
@@ -240,7 +262,8 @@ class DatabaseService {
   getAllSessions() {
     try {
       const sessionsStmt = this.db.prepare(`
-        SELECT id, title, created_at as createdAt, updated_at as updatedAt, character_id as characterId
+        SELECT id, title, created_at as createdAt, updated_at as updatedAt, 
+               character_id as characterId, provider, selected_model as selectedModel
         FROM sessions
         ORDER BY created_at DESC
       `)
@@ -258,6 +281,8 @@ class DatabaseService {
       return sessions.map(session => ({
         ...session,
         characterId: session.characterId || undefined,
+        provider: session.provider || undefined,
+        selectedModel: session.selectedModel || undefined,
         messages: messagesStmt.all(session.id).map(msg => ({
           ...msg,
           timestamp: new Date(msg.timestamp),
@@ -273,7 +298,8 @@ class DatabaseService {
   getSession(sessionId) {
     try {
       const sessionStmt = this.db.prepare(`
-        SELECT id, title, created_at as createdAt, updated_at as updatedAt, character_id as characterId
+        SELECT id, title, created_at as createdAt, updated_at as updatedAt, 
+               character_id as characterId, provider, selected_model as selectedModel
         FROM sessions
         WHERE id = ?
       `)
@@ -297,6 +323,8 @@ class DatabaseService {
       return { 
         ...session, 
         characterId: session.characterId || undefined,
+        provider: session.provider || undefined,
+        selectedModel: session.selectedModel || undefined,
         messages 
       }
     } catch (error) {
@@ -318,6 +346,16 @@ class DatabaseService {
       if (updates.characterId !== undefined) {
         fields.push('character_id = ?')
         values.push(updates.characterId)
+      }
+      
+      if (updates.provider !== undefined) {
+        fields.push('provider = ?')
+        values.push(updates.provider)
+      }
+      
+      if (updates.selectedModel !== undefined) {
+        fields.push('selected_model = ?')
+        values.push(updates.selectedModel)
       }
       
       fields.push('updated_at = ?')

@@ -1,5 +1,5 @@
-import { HardDrive, Server } from 'lucide-react'
-import type { OllamaModel } from '../types/ollama'
+import { HardDrive, Server, Bot } from 'lucide-react'
+import type { AIModel } from '../types/ollama'
 import {
   Select,
   SelectContent,
@@ -10,7 +10,7 @@ import {
 import { Badge } from './ui/badge'
 
 interface ModelSelectorProps {
-  models: OllamaModel[]
+  models: AIModel[]
   selectedModel: string
   onModelChange: (model: string) => void
   loading?: boolean
@@ -22,11 +22,29 @@ export function ModelSelector({ models, selectedModel, onModelChange, loading }:
     return `${gb.toFixed(1)}GB`
   }
 
-  const getModelIcon = (modelName: string) => {
-    if (modelName.includes('gemma') || modelName.includes('llama')) {
+  const getModelIcon = (model: AIModel) => {
+    if (model.provider === 'groq') {
+      return <Bot className="h-4 w-4 text-purple-600" />
+    }
+    if (model.name.includes('gemma') || model.name.includes('llama')) {
       return <Server className="h-4 w-4" />
     }
     return <HardDrive className="h-4 w-4" />
+  }
+
+  const getProviderBadge = (model: AIModel) => {
+    return (
+      <Badge 
+        variant="outline" 
+        className={`ml-2 text-xs ${
+          model.provider === 'groq' 
+            ? 'border-purple-200 text-purple-700 bg-purple-50' 
+            : 'border-blue-200 text-blue-700 bg-blue-50'
+        }`}
+      >
+        {model.provider.toUpperCase()}
+      </Badge>
+    )
   }
 
   if (loading) {
@@ -53,7 +71,10 @@ export function ModelSelector({ models, selectedModel, onModelChange, loading }:
         <SelectValue placeholder="Select model">
           {selectedModel && (
             <div className="flex items-center space-x-2">
-              {getModelIcon(selectedModel)}
+              {(() => {
+                const model = models.find(m => m.name === selectedModel);
+                return model ? getModelIcon(model) : <HardDrive className="h-4 w-4" />;
+              })()}
               <span className="truncate">{selectedModel}</span>
             </div>
           )}
@@ -61,15 +82,18 @@ export function ModelSelector({ models, selectedModel, onModelChange, loading }:
       </SelectTrigger>
       <SelectContent>
         {models.map((model) => (
-          <SelectItem key={model.name} value={model.name} className="text-sm">
+          <SelectItem key={`${model.provider}-${model.name}`} value={model.name} className="text-sm">
             <div className="flex items-center justify-between w-full">
               <div className="flex items-center space-x-2">
-                {getModelIcon(model.name)}
+                {getModelIcon(model)}
                 <span>{model.name}</span>
+                {getProviderBadge(model)}
               </div>
-              <Badge variant="outline" className="ml-auto text-xs">
-                {formatModelSize(model.size)}
-              </Badge>
+              {model.provider === 'ollama' && 'size' in model && (
+                <Badge variant="outline" className="ml-auto text-xs">
+                  {formatModelSize(model.size)}
+                </Badge>
+              )}
             </div>
           </SelectItem>
         ))}

@@ -49,12 +49,8 @@ jobs:
           name: build-${{ runner.os }}
           path: |
             release/**/*.AppImage
-            release/**/*.deb
             release/**/*.dmg
             release/**/*.exe
-            release/**/*.zip
-            release/**/*.yml
-            release/**/*.blockmap
           if-no-files-found: error
 
   release:
@@ -80,12 +76,8 @@ jobs:
           prerelease: false
           files: |
             artifacts/**/*.AppImage
-            artifacts/**/*.deb
             artifacts/**/*.dmg
             artifacts/**/*.exe
-            artifacts/**/*.zip
-            artifacts/**/*.yml
-            artifacts/**/*.blockmap
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

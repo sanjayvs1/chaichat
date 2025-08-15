@@ -81,7 +81,7 @@ const SessionGroup = memo(({
       <Button
         variant="ghost"
         size="sm"
-        className="w-full justify-start h-6 px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+        className="w-full justify-start h-5 px-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
         onClick={() => toggleGroup(groupKey)}
       >
         {isCollapsed ? (
@@ -94,7 +94,7 @@ const SessionGroup = memo(({
       </Button>
       
       {!isCollapsed && (
-        <div className="space-y-1 ml-1">
+        <div className="space-y-0.5 ml-1">
           {sessions.map((session) => (
             <ChatSessionItem
               key={session.id}
@@ -366,7 +366,7 @@ export const ChatSessionList = memo(function ChatSessionList({
       )}
 
       {/* Header with controls */}
-      <div className="flex items-center justify-between px-2.5 py-2 border-b">
+      <div className="flex items-center justify-between px-2 py-1.5 border-b">
         <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">
           Chat History {sessions.length > ITEMS_PER_PAGE && `(${sessions.length})`}
         </h3>
@@ -403,7 +403,7 @@ export const ChatSessionList = memo(function ChatSessionList({
 
       {/* Session Display */}
       <div className="flex-1 overflow-y-auto">
-        <div className="space-y-0.5 p-1">
+        <div className="space-y-0.5 p-0.5">
           {viewMode === 'grouped' ? (
             GROUP_CONFIG.map(({ key, title }) => (
               <SessionGroup 
@@ -419,7 +419,7 @@ export const ChatSessionList = memo(function ChatSessionList({
               />
             ))
           ) : (
-            <div className="space-y-1">
+            <div className="space-y-0.5">
               {paginatedListSessions.sessions.map((session) => (
                 <ChatSessionItem
                   key={session.id}

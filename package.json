@@ -26,6 +26,7 @@
     "@radix-ui/react-alert-dialog": "^1.1.14",
     "@radix-ui/react-avatar": "^1.1.10",
     "@radix-ui/react-dropdown-menu": "^2.1.15",
+    "@radix-ui/react-label": "^2.1.7",
     "@radix-ui/react-scroll-area": "^1.2.9",
     "@radix-ui/react-select": "^2.2.5",
     "@radix-ui/react-separator": "^1.1.7",
@@ -33,6 +34,7 @@
     "better-sqlite3": "^12.2.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "groq-sdk": "^0.30.0",
     "lucide-react": "^0.525.0",
     "prism-react-renderer": "^2.4.1",
     "react": "^19.1.0",
@@ -67,6 +69,7 @@
   "build": {
     "appId": "com.chaichat.app",
     "productName": "ChaiChat",
+    "artifactName": "ChaiChat-${os}-${arch}.${ext}",
     "directories": {
       "output": "release"
     },
