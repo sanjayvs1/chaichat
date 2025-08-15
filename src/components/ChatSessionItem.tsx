@@ -23,6 +23,7 @@ interface ChatSessionItemProps {
   onDelete: (sessionId: string) => void
   onDuplicate: (sessionId: string) => void
   onExport?: (sessionId: string) => void
+  disabled?: boolean
 }
 
 export const ChatSessionItem = memo(function ChatSessionItem({ 
@@ -33,7 +34,8 @@ export const ChatSessionItem = memo(function ChatSessionItem({
   onRename, 
   onDelete, 
   onDuplicate,
-  onExport 
+  onExport,
+  disabled = false
 }: ChatSessionItemProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [editTitle, setEditTitle] = useState(session.title)
@@ -66,17 +68,19 @@ export const ChatSessionItem = memo(function ChatSessionItem({
   }
 
   const handleLoad = () => {
-    if (!isEditing && !isActive) onLoad(session.id)
+    if (!isEditing && !isActive && !disabled) onLoad(session.id)
   }
 
   return (
     <div
       className={cn(
         "group flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] transition-colors",
-        isActive ? "bg-accent/70 text-foreground" : "hover:bg-muted/60"
+        isActive ? "bg-accent/70 text-foreground" : "hover:bg-muted/60",
+        disabled && "opacity-60 cursor-not-allowed"
       )}
       onClick={handleLoad}
       onContextMenu={(e) => {
+        if (disabled) return;
         e.preventDefault();
         setMenuPosition({ x: e.clientX, y: e.clientY });
         setShowMenu(true);
@@ -124,9 +128,10 @@ export const ChatSessionItem = memo(function ChatSessionItem({
         className="ml-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
         aria-label="Delete session"
         tabIndex={0}
+        disabled={disabled}
         onClick={e => {
           e.stopPropagation();
-          onDelete(session.id);
+          if (!disabled) onDelete(session.id);
         }}
       >
         <Trash2 className="h-4 w-4" />

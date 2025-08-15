@@ -60,7 +60,8 @@ function Index() {
     updateCharacter,
     deleteCharacter,
     duplicateCharacter,
-    selectCharacter
+    selectCharacter,
+    isLoadingSession
   } = useChat()
 
   const [showPromptEditor, setShowPromptEditor] = useState(false)
@@ -154,7 +155,22 @@ function Index() {
 
   // Defer large messages array to reduce render pressure during updates
   const deferredMessages = useDeferredValue(messages)
-  const messagesForRender = deferredMessages
+  
+  // State for progressive message loading in large sessions
+  const [visibleMessageCount, setVisibleMessageCount] = useState(50)
+  
+  // Memoize messages to prevent unnecessary re-renders
+  const messagesForRender = useMemo(() => {
+    // For sessions with many messages, show only a subset initially
+    if (deferredMessages.length > visibleMessageCount) {
+      return deferredMessages.slice(-visibleMessageCount)
+    }
+    return deferredMessages
+  }, [deferredMessages, visibleMessageCount])
+  
+  const loadMoreMessages = useCallback(() => {
+    setVisibleMessageCount(prev => Math.min(prev + 50, messages.length))
+  }, [messages.length])
 
   // Handle scrolling for new messages when they are appended.
   // For LLM responses, position them at the top of the viewport for better readability.
@@ -300,6 +316,11 @@ function Index() {
 
   // Memoize current session id string to avoid recomputing during renders
   const currentSessionId = useMemo(() => getCurrentSessionId(), [getCurrentSessionId])
+  
+  // Reset visible message count when switching sessions
+  useEffect(() => {
+    setVisibleMessageCount(50)
+  }, [currentSessionId])
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
@@ -340,9 +361,6 @@ function Index() {
             >
               <Plus className="h-4 w-4" />
               New chat
-              <kbd className="ml-auto pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
-                ⌘N
-              </kbd>
             </Button>
           </SidebarHeader>
           
@@ -351,25 +369,16 @@ function Index() {
               <SidebarItem onClick={() => setShowSearch(!showSearch)}>
                 <Search className="h-4 w-4" />
                 Search chats
-                <kbd className="ml-auto pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
-                  ⌘K
-                </kbd>
               </SidebarItem>
               
               <SidebarItem onClick={() => setShowPromptEditor(!showPromptEditor)}>
                 <Settings className="h-4 w-4" />
                 System prompt
-                <kbd className="ml-auto pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
-                  ⌘/
-                </kbd>
               </SidebarItem>
               
               <SidebarItem onClick={() => setShowCharacters(true)}>
                 <Users className="h-4 w-4" />
                 Characters
-                <kbd className="ml-auto pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
-                  ⌘,
-                </kbd>
               </SidebarItem>
               
               <SidebarItem onClick={() => setShowApiKeys(true)}>
@@ -392,6 +401,7 @@ function Index() {
                 onExportSessions={exportSessions}
                 onImportSessions={importSessions}
                 onExportSession={exportSession}
+                isLoadingSession={isLoadingSession}
               />
             </div>
           </SidebarContent>
@@ -593,11 +603,20 @@ function Index() {
         {/* Messages Area */}
          <div 
           ref={messagesContainerRef} 
-          className="flex-1 overflow-y-auto min-h-0 max-h-full bg-background"
+          className="flex-1 overflow-y-auto min-h-0 max-h-full bg-background relative"
           id="main-content"
           tabIndex={-1}
           aria-label="Chat messages"
         >
+          {/* Session loading overlay */}
+          {isLoadingSession && (
+            <div className="absolute inset-0 bg-background/80 backdrop-blur-sm z-10 flex items-center justify-center">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <RefreshCw className="h-4 w-4 animate-spin" />
+                <span className="text-sm">Loading session...</span>
+              </div>
+            </div>
+          )}
           {messagesForRender.length === 0 ? (
             <div className="flex items-center justify-center h-full p-6">
               <div className="text-center space-y-4 max-w-2xl">
@@ -668,7 +687,21 @@ function Index() {
                 className="px-4 py-2"
               /> */}
               
-              <div className="max-w-3xl w-full mx-auto py-2">
+              <div className={`max-w-3xl w-full mx-auto py-2 transition-opacity duration-200 ${isLoadingSession ? 'opacity-50' : 'opacity-100'}`}>
+                {/* Load more messages button */}
+                {messages.length > visibleMessageCount && (
+                  <div className="text-center mb-4">
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={loadMoreMessages}
+                      className="text-xs"
+                    >
+                      Load {Math.min(50, messages.length - visibleMessageCount)} more messages
+                    </Button>
+                  </div>
+                )}
+                
                  {messagesForRender.map((message, idx) => {
                   const isLastAssistant =
                     message.role === 'assistant' &&

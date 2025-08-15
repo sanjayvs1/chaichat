@@ -30,6 +30,7 @@ interface ChatSessionListProps {
   onExportSessions?: () => void
   onImportSessions?: (file: File) => Promise<boolean>
   onExportSession?: (sessionId: string) => void
+  isLoadingSession?: boolean
 }
 
 type ViewMode = 'grouped' | 'list'
@@ -55,7 +56,8 @@ const SessionGroup = memo(({
   toggleGroup,
   currentSessionId,
   sessionHandlers,
-  characters
+  characters,
+  isLoadingSession
 }: { 
   title: string
   sessions: ChatSession[]
@@ -71,6 +73,7 @@ const SessionGroup = memo(({
     onExport: (sessionId: string) => void
   }
   characters: Character[]
+  isLoadingSession?: boolean
 }) => {
   if (sessions.length === 0) return null
   
@@ -94,7 +97,7 @@ const SessionGroup = memo(({
       </Button>
       
       {!isCollapsed && (
-        <div className="space-y-0.5 ml-1">
+        <div className={`space-y-0.5 ml-1 transition-opacity duration-200 ${isLoadingSession ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
           {sessions.map((session) => (
             <ChatSessionItem
               key={session.id}
@@ -106,6 +109,7 @@ const SessionGroup = memo(({
               onDuplicate={sessionHandlers.onDuplicate}
               onExport={sessionHandlers.onExport}
               characters={characters}
+              disabled={isLoadingSession}
             />
           ))}
         </div>
@@ -270,7 +274,8 @@ export const ChatSessionList = memo(function ChatSessionList({
   onDuplicateSession,
   onExportSessions,
   onImportSessions,
-  onExportSession
+  onExportSession,
+  isLoadingSession = false
 }: ChatSessionListProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('grouped')
   const [sortBy, setSortBy] = useState<SortBy>('date')
@@ -416,10 +421,11 @@ export const ChatSessionList = memo(function ChatSessionList({
                 currentSessionId={currentSessionId || null}
                 sessionHandlers={sessionHandlers}
                 characters={characters}
+                isLoadingSession={isLoadingSession}
               />
             ))
           ) : (
-            <div className="space-y-0.5">
+            <div className={`space-y-0.5 transition-opacity duration-200 ${isLoadingSession ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
               {paginatedListSessions.sessions.map((session) => (
                 <ChatSessionItem
                   key={session.id}
@@ -431,6 +437,7 @@ export const ChatSessionList = memo(function ChatSessionList({
                   onDuplicate={sessionHandlers.onDuplicate}
                   onExport={sessionHandlers.onExport}
                   characters={characters}
+                  disabled={isLoadingSession}
                 />
               ))}
             </div>

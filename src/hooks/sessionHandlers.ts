@@ -28,9 +28,10 @@ export const createNewSession = async (
     updatedAt: new Date().toISOString(),
     messages: [],
     characterId: params.selectedCharacter?.id,
-    provider: params.selectedProvider,
-    selectedModel: params.selectedModel,
+    provider: params.selectedProvider || 'ollama',
+    selectedModel: params.selectedModel || '',
   };
+  console.log('Creating new session with provider:', newSession.provider, 'model:', newSession.selectedModel);
   await dbService.createSession(newSession);
   return newSession;
 };
@@ -69,7 +70,6 @@ export const loadSessionHandler = async (
   } = params;
   
   isSwitchingSessionRef.current = true;
-  setCurrentSessionId(sessionId);
   
   // Clear chat summary when switching sessions to prevent context bleeding
   setChatSummary("");
@@ -77,27 +77,48 @@ export const loadSessionHandler = async (
   // Reset Groq client to prevent any potential context bleeding
   GroqService.resetClient();
   
-  // Always fetch fresh from DB to avoid stale in-memory messages
-  const session =
-    (await dbService.getSession(sessionId)) ||
-    sessions.find((s) => s.id === sessionId);
+  // First check if session is already in memory (sessions array)
+  let session = sessions.find((s) => s.id === sessionId);
+  
+  // Only fetch from DB if not found in memory or if messages might be stale
+  if (!session || session.messages.length === 0) {
+    console.log('Fetching session from DB:', sessionId);
+    const dbSession = await dbService.getSession(sessionId);
+    if (dbSession) {
+      session = dbSession;
+      // Update the in-memory sessions array with fresh data
+      params.setSessions(prevSessions => 
+        prevSessions.map(s => s.id === sessionId ? dbSession : s)
+      );
+    }
+  } else {
+    console.log('Using cached session data:', sessionId);
+  }
+  
   console.log('Loading session:', sessionId, 'data:', {
     provider: session?.provider,
     selectedModel: session?.selectedModel,
-    characterId: session?.characterId
+    characterId: session?.characterId,
+    messageCount: session?.messages.length
   });
+  
   if (session) {
-    // Restore provider and model immediately (high priority)
-    if (session.provider) {
-      console.log('Restoring provider for session:', sessionId, 'to:', session.provider);
-      setSelectedProvider(session.provider);
-    }
-    if (session.selectedModel) {
-      console.log('Restoring model for session:', sessionId, 'to:', session.selectedModel);
-      setSelectedModel(session.selectedModel);
-    }
-    
+    // Batch all state updates to minimize re-renders
     startTransition(() => {
+      // Update current session immediately
+      setCurrentSessionId(sessionId);
+      
+      // Restore provider and model (high priority)
+      if (session.provider) {
+        console.log('Restoring provider for session:', sessionId, 'to:', session.provider);
+        setSelectedProvider(session.provider);
+      }
+      if (session.selectedModel) {
+        console.log('Restoring model for session:', sessionId, 'to:', session.selectedModel);
+        setSelectedModel(session.selectedModel);
+      }
+      
+      // Update messages and character together
       setMessages(session.messages);
       
       // Restore character
@@ -110,7 +131,11 @@ export const loadSessionHandler = async (
         setSelectedCharacter(undefined);
       }
     });
+  } else {
+    // Session not found, just update the current session ID
+    setCurrentSessionId(sessionId);
   }
+  
   // Re-enable autosave after this turn of the event loop
   setTimeout(() => {
     isSwitchingSessionRef.current = false;

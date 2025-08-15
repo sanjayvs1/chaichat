@@ -78,6 +78,8 @@ export function useChat() {
   // Flag to suppress autosave during session switches/initial load
   const isSwitchingSessionRef = useRef<boolean>(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  // Loading state for session switches
+  const [isLoadingSession, setIsLoadingSession] = useState(false);
   
   // Track last used model per provider
   const [lastUsedModels, setLastUsedModels] = useState<{ollama?: string, groq?: string}>({});
@@ -114,7 +116,7 @@ export function useChat() {
             setSelectedModel(firstSession.selectedModel);
           }
         } else {
-          // No sessions, create a new one
+          // No sessions, create a new one with current provider/model
           const newSession: ChatSession = {
             id: crypto.randomUUID(),
             title: "New Conversation",
@@ -122,9 +124,10 @@ export function useChat() {
             updatedAt: new Date().toISOString(),
             messages: [],
             characterId: undefined,
-            provider: undefined,
-            selectedModel: undefined,
+            provider: selectedProvider,
+            selectedModel: selectedModel,
           };
+          console.log('Creating initial session with provider:', selectedProvider, 'model:', selectedModel);
           await dbService.createSession(newSession);
           setSessions([newSession]);
           setCurrentSessionId(newSession.id);
@@ -276,6 +279,56 @@ export function useChat() {
     }
   }, [lastUsedModels, isInitialized]);
 
+  // Persist provider and model changes to current session
+  useEffect(() => {
+    if (!isInitialized || !currentSessionId) return;
+    // Skip during session switches
+    if (isSwitchingSessionRef.current) return;
+
+    const saveSessionSettings = async () => {
+      try {
+        const currentSession = sessions.find(s => s.id === currentSessionId);
+        if (!currentSession) return;
+
+        // Check if provider or model has changed
+        const needsUpdate = (
+          currentSession.provider !== selectedProvider ||
+          currentSession.selectedModel !== selectedModel
+        );
+
+        if (needsUpdate) {
+          await dbService.updateSession(currentSessionId, {
+            provider: selectedProvider,
+            selectedModel: selectedModel,
+            updatedAt: new Date().toISOString()
+          });
+          
+          // Update local sessions state
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === currentSessionId
+                ? { 
+                    ...s, 
+                    provider: selectedProvider,
+                    selectedModel: selectedModel,
+                    updatedAt: new Date().toISOString() 
+                  }
+                : s
+            )
+          );
+          
+          console.log(`Updated session ${currentSessionId} with provider: ${selectedProvider}, model: ${selectedModel}`);
+        }
+      } catch (error) {
+        console.error("Failed to save session settings to database:", error);
+      }
+    };
+
+    // Debounce to avoid too frequent saves
+    const timeout = setTimeout(saveSessionSettings, 200);
+    return () => clearTimeout(timeout);
+  }, [selectedProvider, selectedModel, currentSessionId, isInitialized, sessions]);
+
   // Load models on component mount, but only after initialization is complete
   useEffect(() => {
     if (isInitialized) {
@@ -386,31 +439,39 @@ export function useChat() {
 
   const loadSession = useCallback(
     async (sessionId: string) => {
-      await loadSessionHandler(
-        sessionId,
-        {
-          sessions,
-          setSessions,
-          setCurrentSessionId,
-          setMessages,
-          setChatSummary,
-          setError,
-          selectedCharacter,
-          selectedProvider,
-          selectedModel,
-          currentSessionId,
-          messages,
-          isSwitchingSessionRef,
-          sessionSignatureCache
-        },
-        characters,
-        setSelectedProvider,
-        setSelectedModel,
-        setSelectedCharacter,
-        startTransition
-      );
+      // Skip if already loading this session
+      if (isLoadingSession || sessionId === currentSessionId) return;
+      
+      setIsLoadingSession(true);
+      try {
+        await loadSessionHandler(
+          sessionId,
+          {
+            sessions,
+            setSessions,
+            setCurrentSessionId,
+            setMessages,
+            setChatSummary,
+            setError,
+            selectedCharacter,
+            selectedProvider,
+            selectedModel,
+            currentSessionId,
+            messages,
+            isSwitchingSessionRef,
+            sessionSignatureCache
+          },
+          characters,
+          setSelectedProvider,
+          setSelectedModel,
+          setSelectedCharacter,
+          startTransition
+        );
+      } finally {
+        setIsLoadingSession(false);
+      }
     },
-    [sessions, characters, selectedCharacter, selectedProvider, selectedModel, currentSessionId, messages]
+    [sessions, characters, selectedCharacter, selectedProvider, selectedModel, currentSessionId, messages, isLoadingSession]
   );
 
   const renameSession = useCallback(
@@ -603,5 +664,6 @@ export function useChat() {
     selectCharacter,
     chatSummary,
     setChatSummary,
+    isLoadingSession,
   };
 }

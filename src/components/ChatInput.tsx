@@ -119,17 +119,6 @@ export const ChatInput = memo(function ChatInput({ onSendMessage, disabled, plac
         aria-live="polite"
       >
         <div className="flex items-center gap-4">
-          <span className="hidden sm:inline">
-            <kbd className="inline-flex h-4 select-none items-center gap-1 rounded border bg-muted px-1 font-mono text-[10px]">
-              ↵
-            </kbd>
-            {' '}send · {' '}
-            <kbd className="inline-flex h-4 select-none items-center gap-1 rounded border bg-muted px-1 font-mono text-[10px]">
-              ⇧↵
-            </kbd>
-            {' '}line
-          </span>
-          
           {disabled && (
             <span className="text-orange-500 flex items-center gap-1" role="status" aria-live="polite">
               <Loader2 className="h-3 w-3 animate-spin" />
