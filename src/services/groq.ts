@@ -81,7 +81,16 @@ export class GroqService {
         messages: groqMessages,
         stream: true,
         temperature: 0.7,
-        max_tokens: 4096
+        max_tokens: 4096,
+        // Groq-specific optimizations for streaming
+        top_p: 0.9,
+        stop: null,
+        frequency_penalty: 0,
+        presence_penalty: 0,
+        // Optimize for streaming performance
+        stream_options: {
+          include_usage: false // Reduce overhead by not including usage stats
+        }
       })
 
       for await (const chunk of stream) {

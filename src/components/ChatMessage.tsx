@@ -10,9 +10,10 @@ import { cn } from '@/lib/utils'
 interface ChatMessageProps {
   message: ChatMessageType
   characters: Character[]
+  isStreaming?: boolean
 }
 
-export const ChatMessage = memo(function ChatMessage({ message, characters }: ChatMessageProps) {
+export const ChatMessage = memo(function ChatMessage({ message, characters, isStreaming = false }: ChatMessageProps) {
   // const [copied, setCopied] = useState(false)
   const isUser = message.role === 'user'
   
@@ -38,11 +39,13 @@ export const ChatMessage = memo(function ChatMessage({ message, characters }: Ch
   }, [character?.name])
 
   const formatTime = useMemo(() => {
+    // Skip expensive formatting during streaming
+    if (isStreaming) return 'streaming...';
     return message.timestamp.toLocaleTimeString([], { 
       hour: '2-digit', 
       minute: '2-digit' 
     })
-  }, [message.timestamp])
+  }, [message.timestamp, isStreaming])
 
   const messageSender = useMemo(() => {
     return isUser ? 'You' : character?.name || 'Assistant'
@@ -97,83 +100,115 @@ export const ChatMessage = memo(function ChatMessage({ message, characters }: Ch
   return (
     <div
       className={cn(
-        "group grid grid-cols-[auto,1fr] gap-3 px-3 py-2 hover:bg-muted/20 transition-colors"
+        "group px-4 py-2 mobile-chat-spacing",
+        isUser ? "flex justify-end" : "flex justify-start"
       )}
       role="article"
       aria-label={`Message from ${messageSender} at ${formatTime}`}
     >
-      <div className="pt-0.5">
-        <Avatar className="h-8 w-8">
-          {isUser ? (
-            <AvatarFallback className="bg-primary/80 text-primary-foreground text-xs">
-              <User className="h-3.5 w-3.5" />
-            </AvatarFallback>
-          ) : character?.avatar ? (
-            <AvatarImage src={character.avatar} alt={character?.name || 'Assistant'} />
-          ) : (
-            <AvatarFallback className="bg-muted-foreground/80 text-background text-xs">
-              {character ? getCharacterInitials : <Bot className="h-3.5 w-3.5" />}
-            </AvatarFallback>
-          )}
-        </Avatar>
-      </div>
-
-      <div className="min-w-0">
-        <div className="flex items-baseline gap-2 leading-none">
-          <span className="text-sm font-medium">
-            {messageSender}
-          </span>
-          <span className="text-[11px] text-muted-foreground">
-            {formatTime}
-          </span>
+      <div className={cn(
+        "flex gap-3 max-w-[85%]",
+        isUser ? "flex-row-reverse" : "flex-row",
+        isUser ? "items-end" : "items-start"
+      )}>
+        {/* Avatar */}
+        <div className="flex-shrink-0">
+          <Avatar className="h-6 w-6">
+            {isUser ? (
+              <AvatarFallback className="bg-primary/80 text-primary-foreground text-xs">
+                <User className="h-3 w-3" />
+              </AvatarFallback>
+            ) : character?.avatar ? (
+              <AvatarImage src={character.avatar} alt={character?.name || 'Assistant'} />
+            ) : (
+              <AvatarFallback className="bg-muted-foreground/80 text-background text-xs">
+                {character ? getCharacterInitials : <Bot className="h-3 w-3" />}
+              </AvatarFallback>
+            )}
+          </Avatar>
         </div>
 
-        <div className="mt-1 rounded-md bg-muted/30 border border-muted p-0 max-w-[95%]">
-          {splitThinkBlocks(message.content).map((part, idx) =>
-            part.kind === 'md' ? (
-              <div key={idx} className="px-3 py-2">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    pre: Pre as any,
-                    code: Code as any,
-                    p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-                    ul: ({ children }) => <ul className="list-disc pl-5 mb-2 space-y-1">{children}</ul>,
-                    ol: ({ children }) => <ol className="list-decimal pl-5 mb-2 space-y-1">{children}</ol>,
-                    blockquote: ({ children }) => (
-                      <blockquote className="border-l-2 border-muted-foreground/40 pl-3 italic text-muted-foreground mb-2">
-                        {children}
-                      </blockquote>
-                    ),
-                    h1: ({ children }) => <h1 className="mt-2 mb-1 text-lg font-semibold">{children}</h1>,
-                    h2: ({ children }) => <h2 className="mt-2 mb-1 text-base font-semibold">{children}</h2>,
-                    h3: ({ children }) => <h3 className="mt-2 mb-1 text-sm font-semibold">{children}</h3>,
-                    table: ({ children }) => (
-                      <div className="w-full overflow-auto mb-2">
-                        <table className="w-full text-sm border-collapse">{children}</table>
-                      </div>
-                    ),
-                    th: ({ children }) => (
-                      <th className="border-b px-2 py-1 text-left font-medium">{children}</th>
-                    ),
-                    td: ({ children }) => <td className="border-b px-2 py-1 align-top">{children}</td>,
-                  }}
-                >
-                  {part.content}
-                </ReactMarkdown>
+        {/* Message content */}
+        <div className={cn(
+          "flex flex-col",
+          isUser ? "items-end" : "items-start",
+          isUser ? "max-w-[70%] chat-bubble-user" : "max-w-full chat-bubble-assistant"
+        )}>
+          {/* Message bubble */}
+          <div className={cn(
+            "rounded-2xl px-4 py-3 shadow-sm",
+            isUser
+              ? "bg-primary text-primary-foreground rounded-br-md"
+              : "bg-muted/60 text-foreground border border-border/50 rounded-bl-md",
+            isStreaming && "animate-pulse"
+          )}>
+            {isStreaming ? (
+              // During streaming, render plain text for performance
+              <div className="text-sm leading-relaxed">
+                <pre className="whitespace-pre-wrap break-words font-sans">
+                  {message.content}
+                  <span className="inline-block w-1.5 h-3 bg-current/60 ml-1 animate-pulse" />
+                </pre>
               </div>
             ) : (
-              <details key={idx} className="border-t border-muted/80">
-                <summary className="px-3 py-2 cursor-pointer select-none text-xs text-muted-foreground">
-                  Model reasoning
-                </summary>
-                <div className="px-3 pb-3">
-                  <pre className="whitespace-pre-wrap break-words font-mono text-[12.5px] leading-relaxed bg-muted/40 rounded p-2">
-                    {part.content}
-                  </pre>
-                </div>
-              </details>
-            )
+              // When not streaming, use full markdown parsing
+              splitThinkBlocks(message.content).map((part, idx) =>
+                part.kind === 'md' ? (
+                  <div key={idx} className="text-sm leading-relaxed text-[15px]">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        pre: Pre as any,
+                        code: Code as any,
+                        p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                        ul: ({ children }) => <ul className="list-disc pl-5 mb-2 space-y-1">{children}</ul>,
+                        ol: ({ children }) => <ol className="list-decimal pl-5 mb-2 space-y-1">{children}</ol>,
+                        blockquote: ({ children }) => (
+                          <blockquote className="border-l-2 border-border pl-3 italic text-muted-foreground mb-2">
+                            {children}
+                          </blockquote>
+                        ),
+                        h1: ({ children }) => <h1 className="mt-2 mb-1 text-base font-semibold">{children}</h1>,
+                        h2: ({ children }) => <h2 className="mt-2 mb-1 text-sm font-semibold">{children}</h2>,
+                        h3: ({ children }) => <h3 className="mt-2 mb-1 text-xs font-semibold">{children}</h3>,
+                        table: ({ children }) => (
+                          <div className="w-full overflow-auto mb-2">
+                            <table className="w-full text-xs border-collapse">{children}</table>
+                          </div>
+                        ),
+                        th: ({ children }) => (
+                          <th className="border-b px-2 py-1 text-left font-medium text-xs">{children}</th>
+                        ),
+                        td: ({ children }) => <td className="border-b px-2 py-1 align-top text-xs">{children}</td>,
+                      }}
+                    >
+                      {part.content}
+                    </ReactMarkdown>
+                  </div>
+                ) : (
+                  <details key={idx} className="mt-2 border-t border-border/30">
+                    <summary className="cursor-pointer select-none text-xs text-muted-foreground py-1">
+                      Model reasoning
+                    </summary>
+                    <div className="pt-2">
+                      <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed bg-background/50 rounded p-2">
+                        {part.content}
+                      </pre>
+                    </div>
+                  </details>
+                )
+              )
+            )}
+          </div>
+
+          {/* Timestamp - minimal and positioned appropriately */}
+          {!isStreaming && (
+            <span className={cn(
+              "text-[10px] text-muted-foreground mt-1 px-2",
+              isUser ? "text-right" : "text-left"
+            )}>
+              {formatTime}
+            </span>
           )}
         </div>
       </div>
@@ -185,6 +220,7 @@ export const ChatMessage = memo(function ChatMessage({ message, characters }: Ch
   if (prevProps.message.content !== nextProps.message.content) return false;
   if (prevProps.message.role !== nextProps.message.role) return false;
   if (prevProps.message.characterId !== nextProps.message.characterId) return false;
+  if (prevProps.isStreaming !== nextProps.isStreaming) return false;
   // Treat characters as stable by length-only to avoid deep compares
   if (prevProps.characters.length !== nextProps.characters.length) return false;
   return true;

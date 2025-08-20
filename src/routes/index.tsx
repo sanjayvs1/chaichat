@@ -673,9 +673,9 @@ function Index() {
         )}
 
         {/* Messages Area */}
-         <div 
-          ref={messagesContainerRef} 
-          className="flex-1 overflow-y-auto min-h-0 max-h-full bg-background relative"
+                  <div
+          ref={messagesContainerRef}
+          className="flex-1 overflow-y-auto min-h-0 max-h-full bg-background relative scrollbar-thin scroll-smooth"
           id="main-content"
           tabIndex={-1}
           aria-label="Chat messages"
@@ -690,56 +690,56 @@ function Index() {
             </div>
           )}
           {messagesForRender.length === 0 ? (
-            <div className="flex items-center justify-center h-full p-6">
-              <div className="text-center space-y-4 max-w-2xl">
-                <div className="w-12 h-12 mx-auto rounded-full bg-muted flex items-center justify-center">
-                  <Bot className="h-6 w-6 text-muted-foreground" />
+            <div className="flex items-center justify-center h-full p-8">
+              <div className="text-center space-y-6 max-w-2xl">
+                <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
+                  <Bot className="h-8 w-8 text-primary" />
                 </div>
-                <div className="space-y-2">
-                  <h1 className="text-xl font-semibold">
+                <div className="space-y-3">
+                  <h1 className="text-2xl font-semibold">
                     {!providerStatus[selectedProvider]
                       ? `Connect to ${selectedProvider === 'groq' ? 'Groq' : 'Ollama'}`
                       : selectedCharacter
                         ? `Chat with ${selectedCharacter.name}`
-                        : selectedModel 
+                        : selectedModel
                           ? `Chat with ${selectedModel}`
                           : 'Select a model to start'
                     }
                   </h1>
-                  <p className="text-muted-foreground text-sm">
+                  <p className="text-muted-foreground text-base leading-relaxed">
                     {!providerStatus[selectedProvider]
-                      ? selectedProvider === 'groq' 
-                        ? 'Set your Groq API key in settings'
+                      ? selectedProvider === 'groq'
+                        ? 'Set your Groq API key in settings to start chatting'
                         : 'Make sure Ollama is running on 127.0.0.1:11434'
                       : selectedCharacter
                         ? selectedCharacter.description
-                        : selectedModel 
-                          ? 'Ask me anything!'
-                          : 'Choose a model from the dropdown above'
+                        : selectedModel
+                          ? 'Ask me anything and I\'ll help you out!'
+                          : 'Choose a model from the dropdown above to begin'
                     }
                   </p>
                 </div>
                 {selectedModel && providerStatus[selectedProvider] && (
-                  <div className="space-y-3">
-                    <p className="text-sm text-muted-foreground">Try these examples:</p>
-                     <div className="flex flex-wrap gap-2 justify-center">
-                      <Badge 
-                        variant="outline" 
-                        className="cursor-pointer hover:bg-muted" 
+                  <div className="space-y-4">
+                    <p className="text-sm text-muted-foreground font-medium">Try these examples:</p>
+                     <div className="flex flex-wrap gap-2 justify-center max-w-md">
+                      <Badge
+                        variant="secondary"
+                        className="cursor-pointer hover:bg-primary hover:text-primary-foreground transition-colors"
                         onClick={() => sendMessage('Hello! How are you?')}
                       >
                         Hello! How are you?
                       </Badge>
-                      <Badge 
-                        variant="outline" 
-                        className="cursor-pointer hover:bg-muted" 
+                      <Badge
+                        variant="secondary"
+                        className="cursor-pointer hover:bg-primary hover:text-primary-foreground transition-colors"
                         onClick={() => sendMessage('Explain quantum computing')}
                       >
                         Explain quantum computing
                       </Badge>
-                      <Badge 
-                        variant="outline" 
-                        className="cursor-pointer hover:bg-muted" 
+                      <Badge
+                        variant="secondary"
+                        className="cursor-pointer hover:bg-primary hover:text-primary-foreground transition-colors"
                         onClick={() => sendMessage('Write a poem about coding')}
                       >
                         Write a poem about coding
@@ -759,7 +759,7 @@ function Index() {
                 className="px-4 py-2"
               /> */}
               
-              <div className={`max-w-3xl w-full mx-auto py-2 transition-opacity duration-200 ${isLoadingSession ? 'opacity-50' : 'opacity-100'}`}>
+              <div className={`w-full transition-opacity duration-200 ${isLoadingSession ? 'opacity-50' : 'opacity-100'}`}>
                 {/* Load more messages button */}
                 {messages.length > visibleMessageCount && (
                   <div className="text-center mb-4">
@@ -797,6 +797,7 @@ function Index() {
                       <ChatMessage 
                         message={message} 
                         characters={characters}
+                        isStreaming={isLoading && message.role === 'assistant' && isLast}
                       />
                     </div>
                   )
@@ -807,8 +808,8 @@ function Index() {
           )}
         </div>
 
-        {/* Compact Input Area */}
-        <div className="border-t bg-background p-3 flex-shrink-0">
+        {/* Chat Input Area */}
+        <div className="border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 p-4 flex-shrink-0">
           <div className="max-w-4xl mx-auto">
             <ChatInput
               onSendMessage={handleSendMessage}
@@ -816,9 +817,9 @@ function Index() {
               placeholder={
                 !providerStatus[selectedProvider]
                   ? `${selectedProvider === 'groq' ? 'Groq API key required' : 'Ollama is not connected'}...`
-                  : !selectedModel 
+                  : !selectedModel
                     ? "Select a model first..."
-                    : "Message..."
+                    : "Type your message..."
               }
             />
           </div>

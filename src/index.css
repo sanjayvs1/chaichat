@@ -84,16 +84,37 @@
       min-height: 44px;
       min-width: 44px;
     }
-    
+
     /* Smaller touch targets for compact UI elements */
     .compact-touch {
       min-height: 32px;
       min-width: 32px;
     }
-    
+
     /* Prevent iOS zoom on form inputs */
     input, textarea, select {
       font-size: 16px;
+    }
+
+    /* Chat bubble optimizations for mobile */
+    .chat-bubble-user {
+      max-width: 85%;
+    }
+
+    .chat-bubble-assistant {
+      max-width: 90%;
+    }
+
+    /* Improve spacing on mobile */
+    .mobile-chat-spacing {
+      padding-left: 0.75rem;
+      padding-right: 0.75rem;
+    }
+
+    /* Better touch scrolling */
+    .scroll-smooth {
+      -webkit-overflow-scrolling: touch;
+      scroll-behavior: smooth;
     }
   }
 

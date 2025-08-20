@@ -26,7 +26,22 @@ export class OllamaService {
         role: msg.role,
         content: msg.content
       })),
-      stream: true
+      stream: true,
+      // Performance optimizations for Ollama
+      options: {
+        num_ctx: 4096, // Context window size
+        temperature: 0.7,
+        top_p: 0.9,
+        top_k: 40,
+        repeat_penalty: 1.1,
+        // Optimize for streaming performance
+        num_predict: -1, // Allow full generation
+        tfs_z: 1.0,
+        typical_p: 1.0,
+        mirostat: 0,
+        mirostat_tau: 5.0,
+        mirostat_eta: 0.1
+      }
     }
 
     try {

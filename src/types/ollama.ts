@@ -57,6 +57,19 @@ export interface OllamaChatRequest {
     content: string
   }>
   stream?: boolean
+  options?: {
+    num_ctx?: number
+    temperature?: number
+    top_p?: number
+    top_k?: number
+    repeat_penalty?: number
+    num_predict?: number
+    tfs_z?: number
+    typical_p?: number
+    mirostat?: number
+    mirostat_tau?: number
+    mirostat_eta?: number
+  }
 }
 
 export interface OllamaChatResponse {

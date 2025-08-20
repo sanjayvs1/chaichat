@@ -86,6 +86,9 @@ export function useChat() {
 
   // Cache for session message signatures to avoid repeated JSON.stringify calls
   const sessionSignatureCache = useRef<Map<string, string>>(new Map());
+  
+  // Queue for batching database writes during streaming
+  const pendingDbWrites = useRef<Map<string, { messages: ChatMessage[], timestamp: number }>>(new Map());
 
   // On mount, load sessions and set up initial session if needed
   useEffect(() => {
@@ -179,6 +182,25 @@ export function useChat() {
     });
   }, []);
 
+  // Batched database write function
+  const flushPendingWrites = useCallback(async () => {
+    if (pendingDbWrites.current.size === 0) return;
+    
+    try {
+      const writes = Array.from(pendingDbWrites.current.entries());
+      pendingDbWrites.current.clear();
+      
+      for (const [sessionId, { messages: queuedMessages }] of writes) {
+        if (queuedMessages.length > 0) {
+          await dbService.addMessages(sessionId, queuedMessages);
+          console.log(`Batched save: ${queuedMessages.length} messages to session ${sessionId}`);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to flush pending database writes:", error);
+    }
+  }, []);
+
   // Autosave: update current session in DB whenever messages change
   useEffect(() => {
     if (!isInitialized || !currentSessionId) return;
@@ -186,6 +208,7 @@ export function useChat() {
     if (isLoading || isSwitchingSessionRef.current) return;
 
     // Debounce the save operation to avoid too frequent database writes
+    // Longer delay during streaming to reduce DB contention
     const saveTimeout = setTimeout(async () => {
       try {
         // Get the current session from database to get the latest state
@@ -250,7 +273,7 @@ export function useChat() {
       } catch (error) {
         console.error("Failed to save messages to database:", error);
       }
-    }, 500); // 500ms debounce
+    }, 1000); // Increased debounce to reduce DB writes during streaming
     
     return () => clearTimeout(saveTimeout);
   }, [messages, currentSessionId, isInitialized, isLoading]); // Removed 'sessions' dependency to prevent cascading updates
@@ -274,6 +297,17 @@ export function useChat() {
       });
     }
   }, [lastUsedModels, isInitialized]);
+
+  // Periodic flush of pending database writes
+  useEffect(() => {
+    const flushInterval = setInterval(() => {
+      if (!isLoading) { // Only flush when not actively streaming
+        flushPendingWrites();
+      }
+    }, 3000); // Flush every 3 seconds when idle
+
+    return () => clearInterval(flushInterval);
+  }, [isLoading, flushPendingWrites]);
 
   // Persist provider and model changes to current session
   useEffect(() => {
