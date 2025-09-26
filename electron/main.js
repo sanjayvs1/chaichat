@@ -31,7 +31,7 @@ function createWindow() {
       webSecurity: true,
       preload: path.join(__dirname, 'preload.js')
     },
-    icon: path.join(__dirname, '..', 'public', 'vite.svg'),
+    icon: path.join(__dirname, '..', 'public', 'images', 'chaichat.png'),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     show: false
   })

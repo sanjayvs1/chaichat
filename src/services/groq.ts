@@ -86,11 +86,7 @@ export class GroqService {
         top_p: 0.9,
         stop: null,
         frequency_penalty: 0,
-        presence_penalty: 0,
-        // Optimize for streaming performance
-        stream_options: {
-          include_usage: false // Reduce overhead by not including usage stats
-        }
+        presence_penalty: 0
       })
 
       for await (const chunk of stream) {

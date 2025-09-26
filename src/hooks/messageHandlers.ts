@@ -123,7 +123,6 @@ export const sendMessageHandler = async (
   const startStreaming = async () => {
     try {
       abortControllerRef.current = new AbortController();
-      const requestStartTime = Date.now();
       // Construct effective system prompt with character information
       let effectiveSystemPrompt = systemPrompt;
 
