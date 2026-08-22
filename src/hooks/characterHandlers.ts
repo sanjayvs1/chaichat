@@ -1,6 +1,5 @@
-import type { Character, ChatSession, ChatMessage, AIProvider } from "../types/ollama";
+import type { Character, ChatSession, ChatMessage } from "../types/ollama";
 import { dbService } from "../services/database";
-import { GroqService } from "../services/groq";
 
 export interface CharacterHandlerParams {
   setCharacters: React.Dispatch<React.SetStateAction<Character[]>>;
@@ -20,10 +19,12 @@ export const loadCharactersHandler = async (
   try {
     const dbCharacters = await dbService.getAllCharacters();
     setCharacters(dbCharacters);
+    return dbCharacters;
   } catch (error) {
     setCharactersError(
       error instanceof Error ? error.message : "Failed to load characters"
     );
+    return [];
   } finally {
     setIsCharactersLoading(false);
   }
@@ -127,61 +128,75 @@ export const duplicateCharacterHandler = async (
   }
 };
 
-export const selectCharacterHandler = async (
+/**
+ * Adds a character into the current chat as a participant and makes them the
+ * active speaking target. If they have a greeting and haven't spoken yet in
+ * this chat, their opening line is added immediately.
+ */
+export const addParticipantHandler = async (
   character: Character | undefined,
   currentSessionId: string | null,
   sessions: ChatSession[],
   messages: ChatMessage[],
-  selectedProvider: AIProvider,
-  selectedModel: string,
-  setSelectedCharacter: React.Dispatch<React.SetStateAction<Character | undefined>>,
+  setActiveTargetId: React.Dispatch<React.SetStateAction<string | null>>,
   setSessions: React.Dispatch<React.SetStateAction<ChatSession[]>>,
-  setCurrentSessionId: React.Dispatch<React.SetStateAction<string | null>>,
-  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
-  setChatSummary: React.Dispatch<React.SetStateAction<string>>
+  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>
 ) => {
-  setSelectedCharacter(character);
+  if (!character) return;
+
+  // Always focus the chosen character
+  setActiveTargetId(character.id);
+
   if (!currentSessionId) return;
 
-  const currentSession = sessions.find(s => s.id === currentSessionId);
-  const currentCharacterId = currentSession?.characterId;
-  const nextCharacterId = character?.id;
+  const currentSession = sessions.find((s) => s.id === currentSessionId);
+  const participants =
+    currentSession?.participantIds ??
+    (currentSession?.characterId ? [currentSession.characterId] : []);
 
-  // If the current session already has messages and character is changing,
-  // start a fresh session bound to the newly selected character.
-  if (messages.length > 0 && currentCharacterId !== nextCharacterId) {
-    // Clear chat summary when changing characters to prevent context bleeding
-    setChatSummary("");
-    
-    // Reset Groq client to ensure clean state
-    GroqService.resetClient();
-    
-    const newSession: ChatSession = {
+  const alreadyInChat = participants.includes(character.id);
+
+  // Add greeting when the character joins a conversation they haven't spoken in
+  if (character.greeting && !messages.some((m) => m.characterId === character.id)) {
+    const greetingMessage: ChatMessage = {
       id: crypto.randomUUID(),
-      title: "New Conversation",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      messages: [],
-      characterId: nextCharacterId,
-      provider: selectedProvider,
-      selectedModel: selectedModel,
+      role: "assistant",
+      content: character.greeting,
+      timestamp: new Date(),
+      characterId: character.id,
     };
-    try {
-      await dbService.createSession(newSession);
-      setSessions(prev => [newSession, ...prev]);
-      setCurrentSessionId(newSession.id);
-      setMessages([]);
-    } catch (err) {
-      console.error("Failed to create new session on character change:", err);
+    setMessages((prev) => [...prev, greetingMessage]);
+    if (currentSession && !alreadyInChat) {
+      try {
+        await dbService.addMessages(currentSessionId, [greetingMessage]);
+      } catch (err) {
+        console.error("Failed to persist greeting:", err);
+      }
     }
-    return;
   }
 
-  // Otherwise, bind current session to this character
-  try {
-    await dbService.updateSession(currentSessionId, { characterId: nextCharacterId });
-    setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, characterId: nextCharacterId } : s));
-  } catch (err) {
-    console.error('Failed to persist character selection to session:', err);
+  if (!alreadyInChat) {
+    const nextParticipants = [...participants, character.id];
+    if (currentSession) {
+      try {
+        await dbService.updateSession(currentSessionId, {
+          participantIds: nextParticipants,
+          characterId: currentSession.characterId ?? character.id,
+        });
+      } catch (err) {
+        console.error("Failed to persist participants:", err);
+      }
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === currentSessionId
+            ? {
+                ...s,
+                participantIds: nextParticipants,
+                characterId: s.characterId ?? character.id,
+              }
+            : s
+        )
+      );
+    }
   }
 };

@@ -28,13 +28,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
     updateCharacter: (characterId, updates) => ipcRenderer.invoke('db:updateCharacter', characterId, updates),
     deleteCharacter: (characterId) => ipcRenderer.invoke('db:deleteCharacter', characterId),
     searchCharacters: (query) => ipcRenderer.invoke('db:searchCharacters', query),
+
+    // Character memory operations
+    createMemory: (memory) => ipcRenderer.invoke('db:createMemory', memory),
+    getMemoriesForCharacter: (characterId) => ipcRenderer.invoke('db:getMemoriesForCharacter', characterId),
+    getAllMemories: () => ipcRenderer.invoke('db:getAllMemories'),
+    updateMemory: (memoryId, updates) => ipcRenderer.invoke('db:updateMemory', memoryId, updates),
+    deleteMemory: (memoryId) => ipcRenderer.invoke('db:deleteMemory', memoryId),
     
     // Export/Import operations
     exportSessions: () => ipcRenderer.invoke('db:exportSessions'),
     importSessions: (data) => ipcRenderer.invoke('db:importSessions', data),
     exportToFile: () => ipcRenderer.invoke('db:exportToFile'),
-    importFromFile: () => ipcRenderer.invoke('db:importFromFile')
+    importFromFile: () => ipcRenderer.invoke('db:importFromFile'),
+
+    // Saved script operations
+    createSavedScript: (script) => ipcRenderer.invoke('db:createSavedScript', script),
+    getAllSavedScripts: () => ipcRenderer.invoke('db:getAllSavedScripts'),
+    updateSavedScript: (scriptId, updates) => ipcRenderer.invoke('db:updateSavedScript', scriptId, updates),
+    deleteSavedScript: (scriptId) => ipcRenderer.invoke('db:deleteSavedScript', scriptId)
   },
+
+  // Script execution
+  executeScript: (code, timeoutMs) => ipcRenderer.invoke('script:execute', code, timeoutMs),
 
   // File operations for import/export
   showSaveDialog: (options) => ipcRenderer.invoke('dialog:showSaveDialog', options),

@@ -1,24 +1,52 @@
 import type { OllamaModelsResponse, OllamaChatRequest, ChatMessage } from '../types/ollama'
 
-const OLLAMA_BASE_URL = 'http://127.0.0.1:11434'
+const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434'
 
 export class OllamaService {
+  static getBaseUrl(): string {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('ollama_base_url')
+      if (stored) return stored.replace(/\/+$/, '')
+    }
+    return DEFAULT_OLLAMA_BASE_URL
+  }
+
+  static setBaseUrl(url: string): void {
+    const trimmed = url.trim().replace(/\/+$/, '')
+    if (trimmed) {
+      localStorage.setItem('ollama_base_url', trimmed)
+    } else {
+      localStorage.removeItem('ollama_base_url')
+    }
+  }
+
+  private static async fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 8000): Promise<Response> {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      return await fetch(url, { ...options, signal: controller.signal })
+    } finally {
+      clearTimeout(timeoutId)
+    }
+  }
+
   static async getModels(): Promise<OllamaModelsResponse> {
     try {
-      const response = await fetch(`${OLLAMA_BASE_URL}/api/tags`)
+      const response = await this.fetchWithTimeout(`${this.getBaseUrl()}/api/tags`)
       if (!response.ok) {
         throw new Error(`Failed to fetch models: ${response.statusText}`)
       }
       return await response.json()
     } catch (error) {
       console.error('Error fetching models:', error)
-      throw new Error('Failed to connect to Ollama. Make sure Ollama is running on 127.0.0.1:11434')
+      throw new Error(`Failed to connect to Ollama. Make sure Ollama is running on ${this.getBaseUrl()}`)
     }
   }
 
   static async *chatStream(
     model: string, 
-    messages: ChatMessage[]
+    messages: Array<Pick<ChatMessage, 'role' | 'content'>>,
+    signal?: AbortSignal
   ): AsyncGenerator<string, void, unknown> {
     const requestBody: OllamaChatRequest = {
       model,
@@ -45,12 +73,13 @@ export class OllamaService {
     }
 
     try {
-      const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+      const response = await fetch(`${this.getBaseUrl()}/api/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(requestBody),
+        signal
       })
 
       if (!response.ok) {
@@ -94,6 +123,7 @@ export class OllamaService {
         reader.releaseLock()
       }
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw error
       console.error('Error in chat stream:', error)
       throw new Error('Failed to stream chat response from Ollama')
     }
@@ -101,7 +131,7 @@ export class OllamaService {
 
   static async checkHealth(): Promise<boolean> {
     try {
-      const response = await fetch(`${OLLAMA_BASE_URL}/api/tags`)
+      const response = await this.fetchWithTimeout(`${this.getBaseUrl()}/api/tags`, {}, 3000)
       return response.ok
     } catch {
       return false

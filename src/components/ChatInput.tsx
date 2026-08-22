@@ -6,10 +6,12 @@ import { Textarea } from './ui/textarea'
 interface ChatInputProps {
   onSendMessage: (message: string) => void
   disabled?: boolean
+  /** True only while a response is actively streaming */
+  generating?: boolean
   placeholder?: string
 }
 
-export const ChatInput = memo(function ChatInput({ onSendMessage, disabled, placeholder = "Message..." }: ChatInputProps) {
+export const ChatInput = memo(function ChatInput({ onSendMessage, disabled, generating = false, placeholder = "Message..." }: ChatInputProps) {
   const [message, setMessage] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -82,7 +84,7 @@ export const ChatInput = memo(function ChatInput({ onSendMessage, disabled, plac
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={handleKeyPress}
-            placeholder={disabled ? "Please wait..." : placeholder}
+            placeholder={placeholder}
             disabled={disabled}
             autoFocus
             aria-label="Type your message"
@@ -102,9 +104,9 @@ export const ChatInput = memo(function ChatInput({ onSendMessage, disabled, plac
           size="icon"
           className="h-9 w-9 shrink-0 rounded-md"
           variant={canSend ? "default" : "ghost"}
-          aria-label={disabled ? "Please wait" : canSend ? "Send message" : "Enter a message to send"}
+          aria-label={generating ? "Generating response" : canSend ? "Send message" : "Enter a message to send"}
         >
-          {disabled ? (
+          {generating ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
             <Send className="h-4 w-4" />
@@ -119,7 +121,7 @@ export const ChatInput = memo(function ChatInput({ onSendMessage, disabled, plac
         aria-live="polite"
       >
         <div className="flex items-center gap-4">
-          {disabled && (
+          {generating && (
             <span className="text-orange-500 flex items-center gap-1" role="status" aria-live="polite">
               <Loader2 className="h-3 w-3 animate-spin" />
               Generating...

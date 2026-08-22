@@ -14,47 +14,120 @@ export interface SessionHandlerParams {
   selectedModel: string;
   currentSessionId: string | null;
   messages: ChatMessage[];
+  characters?: Character[];
   isSwitchingSessionRef: React.MutableRefObject<boolean>;
   sessionSignatureCache: React.MutableRefObject<Map<string, string>>;
 }
 
+export function getSessionParticipantIds(session: ChatSession | undefined | null): string[] {
+  if (!session) return [];
+  if (session.participantIds && session.participantIds.length > 0) return session.participantIds;
+  return session.characterId ? [session.characterId] : [];
+}
+
+/**
+ * Adds greeting messages for characters that have one and haven't spoken yet.
+ * Used when starting a fresh chat with characters.
+ */
+async function seedGreetings(
+  sessionId: string,
+  participants: Character[],
+  existingMessages: ChatMessage[],
+  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>
+): Promise<void> {
+  const greetings: ChatMessage[] = participants
+    .filter((c) => c.greeting && !existingMessages.some((m) => m.characterId === c.id))
+    .map(
+      (c): ChatMessage => ({
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: c.greeting!,
+        timestamp: new Date(),
+        characterId: c.id,
+      })
+    );
+
+  if (greetings.length === 0) return;
+
+  try {
+    await dbService.addMessages(sessionId, greetings);
+  } catch (err) {
+    console.error("Failed to persist greetings:", err);
+  }
+  setMessages((prev) => [...prev, ...greetings]);
+}
+
 export const createNewSession = async (
-  params: Pick<SessionHandlerParams, 'selectedCharacter' | 'selectedProvider' | 'selectedModel'>
+  params: Pick<SessionHandlerParams, 'selectedCharacter' | 'selectedProvider' | 'selectedModel'>,
+  participantIds?: string[]
 ): Promise<ChatSession> => {
+  // Prefer explicit participants; fall back to the selected character
+  const ids = participantIds && participantIds.length > 0
+    ? participantIds
+    : params.selectedCharacter
+      ? [params.selectedCharacter.id]
+      : [];
+
   const newSession: ChatSession = {
     id: crypto.randomUUID(),
     title: "New Conversation",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     messages: [],
-    characterId: params.selectedCharacter?.id,
+    characterId: ids[0],
+    participantIds: ids.length > 0 ? ids : undefined,
     provider: params.selectedProvider || 'ollama',
     selectedModel: params.selectedModel || '',
   };
-  console.log('Creating new session with provider:', newSession.provider, 'model:', newSession.selectedModel);
   await dbService.createSession(newSession);
   return newSession;
 };
 
-export const clearChatHandler = async (params: SessionHandlerParams) => {
-  const { setChatSummary, setSessions, setCurrentSessionId, setMessages, setError } = params;
+export const clearChatHandler = async (params: SessionHandlerParams, participantsToCarry?: string[]) => {
+  const {
+    sessions,
+    currentSessionId,
+    setChatSummary,
+    setSessions,
+    setCurrentSessionId,
+    setMessages,
+    setError
+  } = params;
   
   // Clear chat summary to prevent context bleeding into new conversations
   setChatSummary("");
   
   // Reset Groq client to ensure clean state
   GroqService.resetClient();
+
+  // Carry the current cast of characters into the fresh chat by default
+  const previousSession = sessions.find((s) => s.id === currentSessionId);
+  const carriedParticipants =
+    participantsToCarry ??
+    (previousSession ? getSessionParticipantIds(previousSession) : []);
   
-  const newSession = await createNewSession(params);
+  const newSession = await createNewSession(params, carriedParticipants);
   setSessions((prev) => [newSession, ...prev]);
   setCurrentSessionId(newSession.id);
   setMessages([]);
   setError(null);
+
+  // Kick off chats with each participant's opening line
+  if (params.characters) {
+    const greeters = params.characters.filter((c) =>
+      carriedParticipants.includes(c.id)
+    );
+    if (greeters.length > 0) {
+      await seedGreetings(newSession.id, greeters, [], params.setMessages);
+    }
+  }
 };
 
 export const loadSessionHandler = async (
   sessionId: string,
-  params: SessionHandlerParams,
+  params: SessionHandlerParams & {
+    setActiveTargetId?: React.Dispatch<React.SetStateAction<string | null>>;
+  },
   characters: Character[],
   setSelectedProvider: React.Dispatch<React.SetStateAction<AIProvider>>,
   setSelectedModel: React.Dispatch<React.SetStateAction<string>>,
@@ -91,16 +164,7 @@ export const loadSessionHandler = async (
         prevSessions.map(s => s.id === sessionId ? dbSession : s)
       );
     }
-  } else {
-    console.log('Using cached session data:', sessionId);
   }
-  
-  console.log('Loading session:', sessionId, 'data:', {
-    provider: session?.provider,
-    selectedModel: session?.selectedModel,
-    characterId: session?.characterId,
-    messageCount: session?.messages.length
-  });
   
   if (session) {
     // Batch all state updates to minimize re-renders
@@ -110,26 +174,28 @@ export const loadSessionHandler = async (
       
       // Restore provider and model (high priority)
       if (session.provider) {
-        console.log('Restoring provider for session:', sessionId, 'to:', session.provider);
         setSelectedProvider(session.provider);
       }
       if (session.selectedModel) {
-        console.log('Restoring model for session:', sessionId, 'to:', session.selectedModel);
         setSelectedModel(session.selectedModel);
       }
       
       // Update messages and character together
       setMessages(session.messages);
       
-      // Restore character
-      if (session.characterId) {
-        const foundChar = characters.find(
-          (c) => c.id === session.characterId
-        );
-        setSelectedCharacter(foundChar);
-      } else {
-        setSelectedCharacter(undefined);
-      }
+      // Restore the active speaking target: last character who replied,
+      // falling back to the first participant.
+      const participantIds = getSessionParticipantIds(session);
+      const lastAssistantChar = [...session.messages]
+        .reverse()
+        .find((m) => m.role === 'assistant' && m.characterId)?.characterId;
+      
+      const activeTargetId = lastAssistantChar ?? participantIds[0] ?? null;
+      params.setActiveTargetId?.(activeTargetId);
+
+      const primaryId = session.characterId ?? activeTargetId ?? undefined;
+      const foundChar = primaryId ? characters.find((c) => c.id === primaryId) : undefined;
+      setSelectedCharacter(foundChar);
     });
   } else {
     // Session not found, just update the current session ID

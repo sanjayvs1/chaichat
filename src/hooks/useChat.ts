@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, startTransition } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, startTransition } from "react";
 import type {
   ChatMessage,
   ChatSession,
@@ -19,6 +19,7 @@ import {
   saveCurrentAsSessionHandler,
   getSessionsByDateGroup as getSessionsByDateGroupHandler,
   sortedSessionsHandler,
+  getSessionParticipantIds,
 } from "./sessionHandlers";
 
 import {
@@ -33,7 +34,7 @@ import {
   updateCharacterHandler,
   deleteCharacterHandler,
   duplicateCharacterHandler,
-  selectCharacterHandler,
+  addParticipantHandler,
 } from "./characterHandlers";
 
 import {
@@ -60,17 +61,17 @@ export function useChat() {
   const [error, setError] = useState<string | null>(null);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus>({
     ollama: false,
-    groq: false
+    groq: false,
+    lmstudio: false
   });
-  // System prompt (prepended as first assistant message when chatting)
+  // Extra global instructions prepended to every request
   const [systemPrompt, setSystemPrompt] = useState<string>("");
-  // Character state
+  // Characters
   const [characters, setCharacters] = useState<Character[]>([]);
-  const [selectedCharacter, setSelectedCharacter] = useState<
-    Character | undefined
-  >();
   const [isCharactersLoading, setIsCharactersLoading] = useState(false);
   const [charactersError, setCharactersError] = useState<string | null>(null);
+  // The character currently being spoken to (null = plain assistant mode)
+  const [activeTargetId, setActiveTargetId] = useState<string | null>(null);
   const [isOllamaConnected, setIsOllamaConnected] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -80,15 +81,50 @@ export function useChat() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   // Loading state for session switches
   const [isLoadingSession, setIsLoadingSession] = useState(false);
-  
+
   // Track last used model per provider
-  const [lastUsedModels, setLastUsedModels] = useState<{ollama?: string, groq?: string}>({});
+  const [lastUsedModels, setLastUsedModels] = useState<{ollama?: string, groq?: string, lmstudio?: string}>({});
+
+  // Always-fresh messages for async handlers (avoids stale closures during ask-all)
+  const messagesRef = useRef<ChatMessage[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  // The active target character object
+  const activeTarget = useMemo(
+    () => characters.find((c) => c.id === activeTargetId),
+    [characters, activeTargetId]
+  );
+
+  // Keep legacy selectedCharacter in sync with the active target so existing
+  // handlers (edit/delete/duplicate) keep working.
+  const [selectedCharacter, setSelectedCharacter] = useState<
+    Character | undefined
+  >();
+  useEffect(() => {
+    setSelectedCharacter(activeTarget);
+  }, [activeTarget]);
+
+  // Participants of the current chat (multi-character support)
+  const currentSession = useMemo(
+    () => sessions.find((s) => s.id === currentSessionId),
+    [sessions, currentSessionId]
+  );
+  const participantIds = useMemo(
+    () => getSessionParticipantIds(currentSession),
+    [currentSession]
+  );
+  const participants = useMemo(
+    () =>
+      participantIds
+        .map((id) => characters.find((c) => c.id === id))
+        .filter((c): c is Character => !!c),
+    [participantIds, characters]
+  );
 
   // Cache for session message signatures to avoid repeated JSON.stringify calls
   const sessionSignatureCache = useRef<Map<string, string>>(new Map());
-  
-  // Queue for batching database writes during streaming
-  const pendingDbWrites = useRef<Map<string, { messages: ChatMessage[], timestamp: number }>>(new Map());
 
   // On mount, load sessions and set up initial session if needed
   useEffect(() => {
@@ -96,27 +132,39 @@ export function useChat() {
       try {
         isSwitchingSessionRef.current = true;
         const dbSessions = await dbService.getAllSessions();
-        console.log('Loaded sessions from DB:', dbSessions.map(s => ({ 
-          id: s.id, 
-          title: s.title, 
-          provider: s.provider, 
-          selectedModel: s.selectedModel,
-          characterId: s.characterId 
-        })));
         setSessions(dbSessions);
+
+        // Load characters from database
+        const dbCharacters = await dbService.getAllCharacters();
+        setCharacters(dbCharacters);
+
         if (dbSessions.length > 0) {
           const firstSession = dbSessions[0];
           setCurrentSessionId(firstSession.id);
           setMessages(firstSession.messages);
-          
+
           // Restore provider and model from the first session
           if (firstSession.provider) {
-            console.log('Initial load: restoring provider to:', firstSession.provider);
             setSelectedProvider(firstSession.provider);
           }
           if (firstSession.selectedModel) {
-            console.log('Initial load: restoring model to:', firstSession.selectedModel);
             setSelectedModel(firstSession.selectedModel);
+          }
+
+          // Restore the active speaking target
+          const ids = getSessionParticipantIds(firstSession);
+          const lastAssistantChar = [...firstSession.messages]
+            .reverse()
+            .find((m) => m.role === 'assistant' && m.characterId)?.characterId;
+          const restoredTargetId =
+            lastAssistantChar ?? ids[0] ?? null;
+          setActiveTargetId(restoredTargetId);
+          const primaryChar = dbCharacters.find(
+            (c) => c.id === (restoredTargetId ?? firstSession.characterId)
+          );
+          if (primaryChar) {
+            console.log('Initial load: restoring character to:', primaryChar.name);
+            setSelectedCharacter(primaryChar);
           }
         } else {
           // No sessions, create a new one with current provider/model
@@ -126,11 +174,9 @@ export function useChat() {
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             messages: [],
-            characterId: undefined,
             provider: selectedProvider,
             selectedModel: selectedModel,
           };
-          console.log('Creating initial session with provider:', selectedProvider, 'model:', selectedModel);
           await dbService.createSession(newSession);
           setSessions([newSession]);
           setCurrentSessionId(newSession.id);
@@ -149,22 +195,8 @@ export function useChat() {
           try {
             const parsedModels = JSON.parse(dbLastUsedModels);
             setLastUsedModels(parsedModels);
-            console.log('Loaded last used models:', parsedModels);
           } catch (error) {
             console.error('Error parsing last used models:', error);
-          }
-        }
-
-        // Load characters from database
-        const dbCharacters = await dbService.getAllCharacters();
-        setCharacters(dbCharacters);
-        
-        // Restore character from the first session if it exists
-        if (dbSessions.length > 0 && dbSessions[0].characterId) {
-          const foundChar = dbCharacters.find((c) => c.id === dbSessions[0].characterId);
-          if (foundChar) {
-            console.log('Initial load: restoring character to:', foundChar.name);
-            setSelectedCharacter(foundChar);
           }
         }
       } catch (error) {
@@ -182,25 +214,6 @@ export function useChat() {
     });
   }, []);
 
-  // Batched database write function
-  const flushPendingWrites = useCallback(async () => {
-    if (pendingDbWrites.current.size === 0) return;
-    
-    try {
-      const writes = Array.from(pendingDbWrites.current.entries());
-      pendingDbWrites.current.clear();
-      
-      for (const [sessionId, { messages: queuedMessages }] of writes) {
-        if (queuedMessages.length > 0) {
-          await dbService.addMessages(sessionId, queuedMessages);
-          console.log(`Batched save: ${queuedMessages.length} messages to session ${sessionId}`);
-        }
-      }
-    } catch (error) {
-      console.error("Failed to flush pending database writes:", error);
-    }
-  }, []);
-
   // Autosave: update current session in DB whenever messages change
   useEffect(() => {
     if (!isInitialized || !currentSessionId) return;
@@ -208,57 +221,58 @@ export function useChat() {
     if (isLoading || isSwitchingSessionRef.current) return;
 
     // Debounce the save operation to avoid too frequent database writes
-    // Longer delay during streaming to reduce DB contention
     const saveTimeout = setTimeout(async () => {
       try {
         // Get the current session from database to get the latest state
-        const currentSession = await dbService.getSession(currentSessionId);
-        if (!currentSession) return;
-        
+        const currentSessionFromDb = await dbService.getSession(currentSessionId);
+        if (!currentSessionFromDb) return;
+
         // Find new messages that need to be saved
-        const existingMessageIds = new Set(currentSession.messages.map(m => m.id));
+        const existingMessageIds = new Set(currentSessionFromDb.messages.map(m => m.id));
         const newMessages = messages.filter(m => !existingMessageIds.has(m.id));
-        
+
         // Find existing messages that might have been updated (e.g., during streaming)
         const updatedMessages = messages.filter(m => {
-          const existingMessage = currentSession.messages.find(em => em.id === m.id);
+          const existingMessage = currentSessionFromDb.messages.find(em => em.id === m.id);
           return existingMessage && (
             existingMessage.content !== m.content ||
             existingMessage.timestamp.getTime() !== m.timestamp.getTime() ||
-            existingMessage.characterId !== m.characterId
+            existingMessage.characterId !== m.characterId ||
+            existingMessage.targetId !== m.targetId
           );
         });
-        
+
         let savedCount = 0;
-        
+
         // Save new messages to the database
         if (newMessages.length > 0) {
           await dbService.addMessages(currentSessionId, newMessages);
           savedCount += newMessages.length;
         }
-        
+
         // Update existing messages in the database
         for (const message of updatedMessages) {
-          const existingMessage = currentSession.messages.find(em => em.id === message.id);
+          const existingMessage = currentSessionFromDb.messages.find(em => em.id === message.id);
           if (existingMessage) {
             const updates: Partial<ChatMessage> = {};
             if (existingMessage.content !== message.content) updates.content = message.content;
             if (existingMessage.timestamp.getTime() !== message.timestamp.getTime()) updates.timestamp = message.timestamp;
             if (existingMessage.characterId !== message.characterId) updates.characterId = message.characterId;
-            
+            if (existingMessage.targetId !== message.targetId) updates.targetId = message.targetId;
+
             if (Object.keys(updates).length > 0) {
               await dbService.updateMessage(message.id, updates);
               savedCount++;
             }
           }
         }
-        
+
         if (savedCount > 0) {
           // Update session timestamp
           await dbService.updateSession(currentSessionId, {
             updatedAt: new Date().toISOString()
           });
-          
+
           // Update local sessions state without triggering this effect again
           setSessions((prev) =>
             prev.map((s) =>
@@ -267,24 +281,20 @@ export function useChat() {
                 : s
             )
           );
-          
-          console.log(`Saved ${savedCount} messages (${newMessages.length} new, ${updatedMessages.length} updated) to session ${currentSessionId}`);
         }
       } catch (error) {
         console.error("Failed to save messages to database:", error);
       }
-    }, 1000); // Increased debounce to reduce DB writes during streaming
-    
+    }, 1000); // Debounce to reduce DB writes during streaming
+
     return () => clearTimeout(saveTimeout);
-  }, [messages, currentSessionId, isInitialized, isLoading]); // Removed 'sessions' dependency to prevent cascading updates
+  }, [messages, currentSessionId, isInitialized, isLoading]);
 
   // Persist system prompt when it changes (but not during initialization)
   useEffect(() => {
     if (isInitialized && systemPrompt !== undefined) {
       dbService.setSetting("systemPrompt", systemPrompt).catch((error) => {
         console.error("Failed to save system prompt to database:", error);
-        // Fallback to localStorage
-        localStorage.setItem("systemPrompt", systemPrompt);
       });
     }
   }, [systemPrompt, isInitialized]);
@@ -297,68 +307,6 @@ export function useChat() {
       });
     }
   }, [lastUsedModels, isInitialized]);
-
-  // Periodic flush of pending database writes
-  useEffect(() => {
-    const flushInterval = setInterval(() => {
-      if (!isLoading) { // Only flush when not actively streaming
-        flushPendingWrites();
-      }
-    }, 3000); // Flush every 3 seconds when idle
-
-    return () => clearInterval(flushInterval);
-  }, [isLoading, flushPendingWrites]);
-
-  // Persist provider and model changes to current session
-  useEffect(() => {
-    if (!isInitialized || !currentSessionId) return;
-    // Skip during session switches
-    if (isSwitchingSessionRef.current) return;
-
-    const saveSessionSettings = async () => {
-      try {
-        // Get the current session from database to get the latest state
-        const currentSession = await dbService.getSession(currentSessionId);
-        if (!currentSession) return;
-
-        // Check if provider or model has changed
-        const needsUpdate = (
-          currentSession.provider !== selectedProvider ||
-          currentSession.selectedModel !== selectedModel
-        );
-
-        if (needsUpdate) {
-          await dbService.updateSession(currentSessionId, {
-            provider: selectedProvider,
-            selectedModel: selectedModel,
-            updatedAt: new Date().toISOString()
-          });
-          
-          // Update local sessions state without triggering cascading effects
-          setSessions((prev) =>
-            prev.map((s) =>
-              s.id === currentSessionId
-                ? { 
-                    ...s, 
-                    provider: selectedProvider,
-                    selectedModel: selectedModel,
-                    updatedAt: new Date().toISOString() 
-                  }
-                : s
-            )
-          );
-          
-          console.log(`Updated session ${currentSessionId} with provider: ${selectedProvider}, model: ${selectedModel}`);
-        }
-      } catch (error) {
-        console.error("Failed to save session settings to database:", error);
-      }
-    };
-
-    // Debounce to avoid too frequent saves
-    const timeout = setTimeout(saveSessionSettings, 200);
-    return () => clearTimeout(timeout);
-  }, [selectedProvider, selectedModel, currentSessionId, isInitialized]); // Removed 'sessions' dependency to prevent cascading updates
 
   // Load models on component mount, but only after initialization is complete
   useEffect(() => {
@@ -404,23 +352,24 @@ export function useChat() {
     );
   }, [lastUsedModels, models]);
 
-  // Message handlers
+  // Message handler
   const sendMessage = useCallback(
-    async (content: string) => {
+    async (content: string, options?: { askAll?: boolean }) => {
+      const askAll = options?.askAll ?? false;
+      const targets = askAll ? participants : activeTarget ? [activeTarget] : [];
+
       await sendMessageHandler(content, {
         selectedModel,
         selectedProvider,
         isLoading,
         currentSessionId,
-        messages,
+        getMessages: () => messagesRef.current,
         systemPrompt,
-        selectedCharacter,
-        chatSummary,
+        targets,
         providerStatus,
         setIsLoading,
         setError,
         setMessages,
-        setChatSummary,
         setSessions,
         abortControllerRef
       });
@@ -430,9 +379,8 @@ export function useChat() {
       selectedProvider,
       isLoading,
       systemPrompt,
-      messages,
-      selectedCharacter,
-      chatSummary,
+      activeTarget,
+      participants,
       currentSessionId,
       providerStatus,
     ]
@@ -463,10 +411,15 @@ export function useChat() {
       selectedModel,
       currentSessionId,
       messages,
+      characters,
       isSwitchingSessionRef,
       sessionSignatureCache
     });
-  }, [selectedCharacter, selectedProvider, selectedModel, sessions, currentSessionId, messages]);
+    // Focus the first carried-over participant, if any
+    const previousSession = sessions.find((s) => s.id === currentSessionId);
+    const carried = previousSession ? getSessionParticipantIds(previousSession) : [];
+    setActiveTargetId(carried[0] ?? null);
+  }, [selectedCharacter, selectedProvider, selectedModel, sessions, currentSessionId, messages, characters]);
 
   const loadSession = useCallback(
     async (sessionId: string) => {
@@ -489,8 +442,10 @@ export function useChat() {
             selectedModel,
             currentSessionId,
             messages,
+            characters,
             isSwitchingSessionRef,
-            sessionSignatureCache
+            sessionSignatureCache,
+            setActiveTargetId
           },
           characters,
           setSelectedProvider,
@@ -526,11 +481,12 @@ export function useChat() {
         selectedModel,
         currentSessionId,
         messages,
+        characters,
         isSwitchingSessionRef,
         sessionSignatureCache
       });
     },
-    [sessions, selectedCharacter, selectedProvider, selectedModel, currentSessionId, messages]
+    [sessions, selectedCharacter, selectedProvider, selectedModel, currentSessionId, messages, characters]
   );
 
   const duplicateSession = useCallback(
@@ -595,7 +551,8 @@ export function useChat() {
 
   // Character handlers
   const loadCharacters = useCallback(async () => {
-    await loadCharactersHandler({ setCharacters, setIsCharactersLoading, setCharactersError });
+    const loaded = await loadCharactersHandler({ setCharacters, setIsCharactersLoading, setCharactersError });
+    setCharacters(loaded);
   }, []);
 
   const createCharacter = useCallback(async (character: Character) => {
@@ -624,29 +581,69 @@ export function useChat() {
         setSelectedCharacter,
         selectedCharacter
       });
+      // Drop them from the current chat if they were participating
+      if (currentSessionId) {
+        const nextIds = participantIds.filter((id) => id !== characterId);
+        await dbService.updateSession(currentSessionId, { participantIds: nextIds }).catch(() => {});
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === currentSessionId
+              ? { ...s, participantIds: nextIds.length > 0 ? nextIds : undefined }
+              : s
+          )
+        );
+        if (activeTargetId === characterId) {
+          setActiveTargetId(nextIds[0] ?? null);
+        }
+      }
     },
-    [selectedCharacter]
+    [selectedCharacter, currentSessionId, participantIds, activeTargetId]
   );
 
   const duplicateCharacter = useCallback(async (character: Character) => {
     return await duplicateCharacterHandler(character, setCharacters, setCharactersError);
   }, []);
 
+  // Selecting a character adds/joins them into the chat and focuses them.
   const selectCharacter = useCallback(async (character: Character | undefined) => {
-    await selectCharacterHandler(
+    await addParticipantHandler(
       character,
       currentSessionId,
       sessions,
       messages,
-      selectedProvider,
-      selectedModel,
-      setSelectedCharacter,
+      setActiveTargetId,
       setSessions,
-      setCurrentSessionId,
-      setMessages,
-      setChatSummary
+      setMessages
     );
-  }, [currentSessionId, sessions, messages, selectedProvider, selectedModel]);
+  }, [currentSessionId, sessions, messages]);
+
+  // Remove a character from the current chat (their history stays visible)
+  const removeParticipant = useCallback(
+    async (characterId: string) => {
+      if (!currentSessionId) return;
+      const nextIds = participantIds.filter((id) => id !== characterId);
+      try {
+        await dbService.updateSession(currentSessionId, { participantIds: nextIds });
+      } catch (err) {
+        console.error("Failed to persist participants:", err);
+      }
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === currentSessionId
+            ? { ...s, participantIds: nextIds.length > 0 ? nextIds : undefined }
+            : s
+        )
+      );
+      if (activeTargetId === characterId) {
+        setActiveTargetId(nextIds[nextIds.length - 1] ?? null);
+      }
+    },
+    [currentSessionId, participantIds, activeTargetId]
+  );
+
+  const setActiveTarget = useCallback((character: Character | undefined) => {
+    setActiveTargetId(character?.id ?? null);
+  }, []);
 
   return {
     messages,
@@ -696,5 +693,11 @@ export function useChat() {
     chatSummary,
     setChatSummary,
     isLoadingSession,
+    // Multi-character chat
+    participants,
+    activeTarget,
+    activeTargetId,
+    setActiveTarget,
+    removeParticipant,
   };
 }

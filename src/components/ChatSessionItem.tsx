@@ -1,8 +1,6 @@
 import { useState, memo } from 'react'
-import { Edit3, Trash2, Copy, Download, User } from 'lucide-react'
+import { Edit3, Trash2, Copy, Download, MessageSquare } from 'lucide-react'
 import type { ChatSession, Character } from '../types/ollama'
-
-// Avatar imports kept for potential future use; currently not rendered
 import { 
   DropdownMenu,
   DropdownMenuContent,
@@ -12,7 +10,7 @@ import {
 } from './ui/dropdown-menu'
 import { Input } from './ui/input'
 import { cn } from '@/lib/utils'
-import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar'
+import { CharacterAvatar } from './CharacterAvatar'
 
 interface ChatSessionItemProps {
   session: ChatSession
@@ -24,6 +22,31 @@ interface ChatSessionItemProps {
   onDuplicate: (sessionId: string) => void
   onExport?: (sessionId: string) => void
   disabled?: boolean
+}
+
+function relativeTime(isoString: string): string {
+  const date = new Date(isoString)
+  const diffMs = Date.now() - date.getTime()
+  const minutes = Math.floor(diffMs / 60000)
+  if (minutes < 1) return 'now'
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d`
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric' })
+}
+
+/** Resolve the cast of a session, handling legacy single-character sessions. */
+function getCast(session: ChatSession, characters: Character[]): Character[] {
+  const ids = session.participantIds && session.participantIds.length > 0
+    ? session.participantIds
+    : session.characterId
+      ? [session.characterId]
+      : []
+  return ids
+    .map((id) => characters.find((c) => c.id === id))
+    .filter((c): c is Character => !!c)
 }
 
 export const ChatSessionItem = memo(function ChatSessionItem({ 
@@ -42,9 +65,9 @@ export const ChatSessionItem = memo(function ChatSessionItem({
   const [showMenu, setShowMenu] = useState(false)
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 })
 
-  const sessionCharacter = session.characterId 
-    ? characters.find(c => c.id === session.characterId)
-    : undefined
+  const cast = getCast(session, characters)
+  const shownCast = cast.slice(0, 3)
+  const extraCount = cast.length - shownCast.length
 
   const handleSaveEdit = () => {
     if (editTitle.trim() && editTitle.trim() !== session.title) {
@@ -86,18 +109,32 @@ export const ChatSessionItem = memo(function ChatSessionItem({
         setShowMenu(true);
       }}
     >
-      <div className="shrink-0">
-        <Avatar className="h-6 w-6">
-          {sessionCharacter?.avatar ? (
-            <AvatarImage src={sessionCharacter.avatar} alt={sessionCharacter.name} />
-          ) : sessionCharacter ? (
-            <AvatarFallback className="text-[10px]">
-              {sessionCharacter.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0,2)}
-            </AvatarFallback>
-          ) : (
-            <AvatarFallback className="text-[10px]"><User className="h-3 w-3" /></AvatarFallback>
-          )}
-        </Avatar>
+      {/* Participant avatars */}
+      <div className="shrink-0 flex items-center">
+        {shownCast.length > 0 ? (
+          <div className="flex -space-x-1.5">
+            {shownCast.map((character) => (
+              <CharacterAvatar
+                key={character.id}
+                avatar={character.avatar}
+                name={character.name}
+                className="h-6 w-6 ring-1 ring-background text-[9px]"
+              />
+            ))}
+            {extraCount > 0 && (
+              <div className="h-6 w-6 rounded-full bg-muted ring-1 ring-background flex items-center justify-center text-[9px] text-muted-foreground">
+                +{extraCount}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div
+            className="h-6 w-6 rounded-full bg-muted flex items-center justify-center"
+            title="No character"
+          >
+            <MessageSquare className="h-3 w-3 text-muted-foreground" />
+          </div>
+        )}
       </div>
       
       <div className="flex-1 min-w-0 cursor-pointer">
@@ -113,15 +150,23 @@ export const ChatSessionItem = memo(function ChatSessionItem({
           />
         ) : (
           <div className="space-y-0.5">
-            <span className="block truncate font-medium">{session.title}</span>
-            {sessionCharacter && (
-              <span className="text-[11px] text-muted-foreground truncate">{sessionCharacter.name}</span>
-            )}
+            <span className="block truncate font-medium leading-tight">{session.title}</span>
+            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              {cast.length > 0 && (
+                <span className="truncate max-w-[110px]">
+                  {cast.map((c) => c.name).join(', ')}
+                </span>
+              )}
+              {cast.length > 0 && session.messages.length > 0 && <span>·</span>}
+              {session.messages.length > 0 && (
+                <span>{session.messages.length} msg{session.messages.length === 1 ? '' : 's'}</span>
+              )}
+              {(cast.length > 0 || session.messages.length > 0) && <span>·</span>}
+              <span>{relativeTime(session.updatedAt || session.createdAt)}</span>
+            </div>
           </div>
         )}
       </div>
-
-
 
       {/* Right-click context menu */}
       <DropdownMenu open={showMenu} onOpenChange={setShowMenu}>
@@ -160,4 +205,4 @@ export const ChatSessionItem = memo(function ChatSessionItem({
       </DropdownMenu>
     </div>
   )
-}) 
+})

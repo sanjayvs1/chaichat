@@ -1,4 +1,4 @@
-import { ChatMessage, ChatSession, Character } from './ollama'
+import { ChatMessage, ChatSession, Character, CharacterMemory, SavedScript, ScriptExecutionResult } from './ollama'
 
 export interface ElectronAPI {
   db: {
@@ -23,17 +23,31 @@ export interface ElectronAPI {
     updateCharacter: (characterId: string, updates: Partial<Character>) => Promise<boolean>
     deleteCharacter: (characterId: string) => Promise<boolean>
     searchCharacters: (query: string) => Promise<Character[]>
+
+    // Character memory operations
+    createMemory: (memory: CharacterMemory) => Promise<string>
+    getMemoriesForCharacter: (characterId: string) => Promise<CharacterMemory[]>
+    getAllMemories: () => Promise<CharacterMemory[]>
+    updateMemory: (memoryId: string, updates: Partial<CharacterMemory>) => Promise<boolean>
+    deleteMemory: (memoryId: string) => Promise<boolean>
     
     exportSessions: () => Promise<ExportData>
     importSessions: (data: ExportData) => Promise<number>
     exportToFile: () => Promise<void>
     importFromFile: () => Promise<number>
+
+    // Saved script operations
+    createSavedScript: (script: SavedScript) => Promise<string>
+    getAllSavedScripts: () => Promise<SavedScript[]>
+    updateSavedScript: (scriptId: string, updates: Partial<SavedScript>) => Promise<boolean>
+    deleteSavedScript: (scriptId: string) => Promise<boolean>
   }
   
   showSaveDialog: (options: Electron.SaveDialogOptions) => Promise<Electron.SaveDialogReturnValue>
   showOpenDialog: (options: Electron.OpenDialogOptions) => Promise<Electron.OpenDialogReturnValue>
   writeFile: (filePath: string, data: string) => Promise<boolean>
   readFile: (filePath: string) => Promise<string>
+  executeScript: (code: string, timeoutMs?: number) => Promise<ScriptExecutionResult>
 }
 
 export interface SearchResult {
@@ -43,9 +57,11 @@ export interface SearchResult {
 }
 
 export interface ExportData {
-  version: string
-  exportDate: string
+  version?: string
+  exportDate?: string
   sessions: ChatSession[]
+  characters?: Character[]
+  memories?: CharacterMemory[]
 }
 
 export interface ChatSession {

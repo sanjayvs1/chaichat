@@ -66,7 +66,8 @@ export class GroqService {
 
   static async *chatStream(
     model: string,
-    messages: ChatMessage[]
+    messages: Array<Pick<ChatMessage, 'role' | 'content'>>,
+    signal?: AbortSignal
   ): AsyncGenerator<string, void, unknown> {
     try {
       const client = this.getClient()
@@ -87,7 +88,7 @@ export class GroqService {
         stop: null,
         frequency_penalty: 0,
         presence_penalty: 0
-      })
+      }, { signal })
 
       for await (const chunk of stream) {
         const content = chunk.choices[0]?.delta?.content

@@ -1,8 +1,7 @@
 import { VisuallyHidden } from '@radix-ui/react-visually-hidden'
-import { AlertCircle, Bot, Github, Menu, Moon, Plus, RefreshCw, Search, Settings, Square, Sun, Users, Wifi, WifiOff, X, Key } from 'lucide-react'
+import { AlertCircle, Bot, Code2, Github, Menu, Moon, Plus, RefreshCw, Search, Settings, Square, Sun, Users, Wifi, WifiOff, X, Key, Monitor, MessagesSquare } from 'lucide-react'
 import { useEffect, useRef, useState, useMemo, useDeferredValue, useCallback } from 'react'
 import { CharacterList } from '../components/CharacterList'
-import { CharacterSelector } from '../components/CharacterSelector'
 import { ChatInput } from '../components/ChatInput'
 import { ChatMessage } from '../components/ChatMessage'
 import { ChatSearch } from '../components/ChatSearch'
@@ -10,13 +9,18 @@ import { ChatSessionList } from '../components/ChatSessionList'
 import { ModelSelector } from '../components/ModelSelector'
 import { ProviderSelector } from '../components/ProviderSelector'
 import { ApiKeyManager } from '../components/ApiKeyManager'
+import { ParticipantsBar } from '../components/ParticipantsBar'
+import { SavedScripts } from '../components/SavedScripts'
 import { SystemPromptEditor } from '../components/SystemPromptEditor'
+import { CharacterAvatar } from '../components/CharacterAvatar'
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../components/ui/dialog'
 import { Sidebar, SidebarContent, SidebarHeader, SidebarItem } from '../components/ui/sidebar'
 import { useChat } from '../hooks/useChat'
+import { dbService } from '../services/database'
+import type { SavedScript } from '../types/ollama'
 
 export default Index
 
@@ -28,7 +32,7 @@ function Index() {
     selectedModel,
     setSelectedModel,
     selectedProvider,
-    handleProviderChange: hookHandleProviderChange,
+    handleProviderChange,
     isLoading,
     isModelsLoading,
     error,
@@ -61,6 +65,10 @@ function Index() {
     deleteCharacter,
     duplicateCharacter,
     selectCharacter,
+    participants,
+    activeTarget,
+    activeTargetId,
+    removeParticipant,
     isLoadingSession
   } = useChat()
 
@@ -68,6 +76,7 @@ function Index() {
   const [showSearch, setShowSearch] = useState(false)
   const [showCharacters, setShowCharacters] = useState(false)
   const [showApiKeys, setShowApiKeys] = useState(false)
+  const [showSavedScripts, setShowSavedScripts] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     if (typeof window !== 'undefined') {
       return window.innerWidth >= 768 // Default to open on desktop (md breakpoint)
@@ -356,13 +365,14 @@ function Index() {
         else if (showSearch) setShowSearch(false)
         else if (showCharacters) setShowCharacters(false)
         else if (showApiKeys) setShowApiKeys(false)
+        else if (showSavedScripts) setShowSavedScripts(false)
         else if (sidebarOpen) setSidebarOpen(false)
       }
     }
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [showPromptEditor, showSearch, showCharacters, showApiKeys, sidebarOpen, clearChat])
+  }, [showPromptEditor, showSearch, showCharacters, showApiKeys, showSavedScripts, sidebarOpen, clearChat])
 
   // Stable onSendMessage to avoid re-rendering ChatInput during streaming
   const sendMessageRef = useRef(sendMessage)
@@ -371,18 +381,24 @@ function Index() {
     sendMessageRef.current(text)
   }, [])
 
-  // Handle provider change - automatically select last used model for that provider
-  // If there are existing messages, create a new session to preserve the current one
-  const handleProviderChange = useCallback((provider: typeof selectedProvider) => {
-    if (messages.length > 0 && provider !== selectedProvider) {
-      // Create new session with the new provider
-      clearChat().then(() => {
-        hookHandleProviderChange(provider)
-      })
-    } else {
-      hookHandleProviderChange(provider)
+  const handleSaveScript = useCallback((code: string, language: string) => {
+    const now = new Date().toISOString()
+    const firstLine = code.split('\n')[0]?.trim() || ''
+    const autoName = firstLine.startsWith('#')
+      ? firstLine.replace(/^#+\s*/, '').slice(0, 60)
+      : `Script ${new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+
+    const script: SavedScript = {
+      id: crypto.randomUUID(),
+      name: autoName,
+      code,
+      language: language || 'python',
+      createdAt: now,
+      updatedAt: now,
+      sessionId: getCurrentSessionId() || null,
     }
-  }, [hookHandleProviderChange, messages.length, selectedProvider, clearChat])
+    dbService.createSavedScript(script).catch(err => console.error('Failed to save script:', err))
+  }, [getCurrentSessionId])
 
   // Memoize current session id string to avoid recomputing during renders
   const currentSessionId = useMemo(() => getCurrentSessionId(), [getCurrentSessionId])
@@ -456,6 +472,11 @@ function Index() {
                   <Key className="h-4 w-4" />
                   API Keys
                 </SidebarItem>
+
+                <SidebarItem onClick={() => setShowSavedScripts(true)}>
+                  <Code2 className="h-4 w-4" />
+                  Saved Scripts
+                </SidebarItem>
               </div>
               
               <div className="mt-4">
@@ -515,14 +536,6 @@ function Index() {
                   onModelChange={setSelectedModel}
                   loading={isModelsLoading}
                 />
-                
-                <CharacterSelector
-                  characters={characters}
-                  selectedCharacter={selectedCharacter}
-                  onSelectCharacter={selectCharacter}
-                  onManageCharacters={() => setShowCharacters(true)}
-                  disabled={isLoading}
-                />
               </div>
             </div>
           </div>
@@ -530,7 +543,7 @@ function Index() {
           <div className="flex items-center gap-1">
             {/* Connection status with better accessibility */}
             <div className="flex items-center gap-2 mr-2">
-              {selectedProvider === 'ollama' ? (
+              {selectedProvider === 'ollama' && (
                 providerStatus.ollama ? (
                   <div className="flex items-center gap-1">
                     <Wifi className="h-4 w-4 text-emerald-600" />
@@ -542,7 +555,21 @@ function Index() {
                     <span className="sr-only">Disconnected from Ollama</span>
                   </div>
                 )
-              ) : (
+              )}
+              {selectedProvider === 'lmstudio' && (
+                providerStatus.lmstudio ? (
+                  <div className="flex items-center gap-1">
+                    <Monitor className="h-4 w-4 text-emerald-600" />
+                    <span className="sr-only">Connected to LM Studio</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1">
+                    <WifiOff className="h-4 w-4 text-destructive" />
+                    <span className="sr-only">Disconnected from LM Studio</span>
+                  </div>
+                )
+              )}
+              {selectedProvider === 'groq' && (
                 providerStatus.groq ? (
                   <div className="flex items-center gap-1">
                     <Wifi className="h-4 w-4 text-purple-600" />
@@ -612,7 +639,7 @@ function Index() {
           </div>
         </header>
 
-        {/* Mobile Model/Character Selectors */}
+        {/* Mobile Provider/Model Selectors */}
         <div className="sm:hidden flex flex-col gap-2 p-3 border-b bg-muted/20">
           <ProviderSelector
             selectedProvider={selectedProvider}
@@ -624,13 +651,6 @@ function Index() {
             selectedModel={selectedModel}
             onModelChange={setSelectedModel}
             loading={isModelsLoading}
-          />
-          <CharacterSelector
-            characters={characters}
-            selectedCharacter={selectedCharacter}
-            onSelectCharacter={selectCharacter}
-            onManageCharacters={() => setShowCharacters(true)}
-            disabled={isLoading}
           />
         </div>
 
@@ -692,15 +712,37 @@ function Index() {
           {messagesForRender.length === 0 ? (
             <div className="flex items-center justify-center h-full p-8">
               <div className="text-center space-y-6 max-w-2xl">
-                <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
-                  <Bot className="h-8 w-8 text-primary" />
-                </div>
+                {participants.length > 0 ? (
+                  <div className="flex items-center justify-center gap-3">
+                    {participants.slice(0, 4).map((c) => (
+                      <CharacterAvatar
+                        key={c.id}
+                        avatar={c.avatar}
+                        name={c.name}
+                        className="h-16 w-16 text-2xl"
+                      />
+                    ))}
+                    {participants.length > 4 && (
+                      <div className="h-16 w-16 rounded-full bg-muted flex items-center justify-center text-sm text-muted-foreground">
+                        +{participants.length - 4}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
+                    <Bot className="h-8 w-8 text-primary" />
+                  </div>
+                )}
                 <div className="space-y-3">
                   <h1 className="text-2xl font-semibold">
                     {!providerStatus[selectedProvider]
-                      ? `Connect to ${selectedProvider === 'groq' ? 'Groq' : 'Ollama'}`
-                      : selectedCharacter
-                        ? `Chat with ${selectedCharacter.name}`
+                      ? selectedProvider === 'groq'
+                        ? 'Connect to Groq'
+                        : selectedProvider === 'lmstudio'
+                          ? 'Connect to LM Studio'
+                          : 'Connect to Ollama'
+                      : activeTarget
+                        ? `Chat with ${activeTarget.name}`
                         : selectedModel
                           ? `Chat with ${selectedModel}`
                           : 'Select a model to start'
@@ -710,12 +752,16 @@ function Index() {
                     {!providerStatus[selectedProvider]
                       ? selectedProvider === 'groq'
                         ? 'Set your Groq API key in settings to start chatting'
-                        : 'Make sure Ollama is running on 127.0.0.1:11434'
-                      : selectedCharacter
-                        ? selectedCharacter.description
-                        : selectedModel
-                          ? 'Ask me anything and I\'ll help you out!'
-                          : 'Choose a model from the dropdown above to begin'
+                        : selectedProvider === 'lmstudio'
+                          ? 'Start the LM Studio server (Developer → Start Server, port 1234)'
+                          : 'Make sure Ollama is running on 127.0.0.1:11434'
+                      : participants.length > 1
+                        ? `${participants.map((p) => p.name).join(', ')} are in this chat. Pick who to talk to below — each keeps their own memory.`
+                        : activeTarget
+                          ? activeTarget.tagline || activeTarget.description
+                          : selectedModel
+                            ? 'Ask me anything and I\'ll help you out!'
+                            : 'Choose a model from the dropdown above to begin'
                     }
                   </p>
                 </div>
@@ -798,6 +844,7 @@ function Index() {
                         message={message} 
                         characters={characters}
                         isStreaming={isLoading && message.role === 'assistant' && isLast}
+                        onSaveScript={handleSaveScript}
                       />
                     </div>
                   )
@@ -810,16 +857,48 @@ function Index() {
 
         {/* Chat Input Area */}
         <div className="border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 p-4 flex-shrink-0">
-          <div className="max-w-4xl mx-auto">
+          <div className="max-w-4xl mx-auto space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <ParticipantsBar
+                participants={participants}
+                activeTargetId={activeTargetId}
+                onSelectTarget={selectCharacter}
+                onRemoveParticipant={removeParticipant}
+                onAddParticipant={() => setShowCharacters(true)}
+                disabled={isLoading}
+              />
+              {participants.length > 1 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 gap-1.5 text-xs"
+                  disabled={isLoading || !selectedModel || !providerStatus[selectedProvider]}
+                  onClick={() => sendMessage('Hello everyone!', { askAll: true })}
+                  title="Send to every character in this chat — each answers from their own context"
+                >
+                  <MessagesSquare className="h-3.5 w-3.5" />
+                  Ask all
+                </Button>
+              )}
+            </div>
             <ChatInput
               onSendMessage={handleSendMessage}
               disabled={isLoading || !selectedModel || !providerStatus[selectedProvider]}
+              generating={isLoading}
               placeholder={
                 !providerStatus[selectedProvider]
-                  ? `${selectedProvider === 'groq' ? 'Groq API key required' : 'Ollama is not connected'}...`
+                  ? selectedProvider === 'groq'
+                    ? 'Groq API key required...'
+                    : selectedProvider === 'lmstudio'
+                      ? 'LM Studio server not connected...'
+                      : 'Ollama is not connected...'
                   : !selectedModel
-                    ? "Select a model first..."
-                    : "Type your message..."
+                    ? 'Select a model first...'
+                    : activeTarget
+                      ? `Message ${activeTarget.name}...`
+                      : participants.length > 0
+                        ? 'Pick a character to talk to...'
+                        : 'Type your message...'
               }
             />
           </div>
@@ -871,6 +950,19 @@ function Index() {
               }}
             />
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Saved Scripts Dialog */}
+      <Dialog open={showSavedScripts} onOpenChange={setShowSavedScripts}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-hidden">
+          <DialogTitle asChild>
+            <VisuallyHidden>Saved Scripts</VisuallyHidden>
+          </DialogTitle>
+          <DialogDescription asChild>
+            <VisuallyHidden>View, run, and manage saved Python scripts from chat responses.</VisuallyHidden>
+          </DialogDescription>
+          <SavedScripts />
         </DialogContent>
       </Dialog>
     </div>

@@ -1,4 +1,4 @@
-import type { ChatSession, ChatMessage, Character } from '../types/ollama'
+import type { ChatSession, ChatMessage, Character, CharacterMemory, SavedScript, ScriptExecutionResult } from '../types/ollama'
 
 // Helper to ensure we're running inside Electron renderer
 const getElectronDB = () => {
@@ -131,12 +131,62 @@ export class DatabaseService {
     )
   }
 
+  // Character memory operations
+  async createMemory(memory: CharacterMemory): Promise<string> {
+    if (typeof window !== 'undefined' && window.electronAPI) {
+      return window.electronAPI.db.createMemory(memory)
+    }
+    const memories = JSON.parse(localStorage.getItem('characterMemories') || '[]')
+    memories.push(memory)
+    localStorage.setItem('characterMemories', JSON.stringify(memories))
+    return memory.id
+  }
+
+  async getMemoriesForCharacter(characterId: string): Promise<CharacterMemory[]> {
+    if (typeof window !== 'undefined' && window.electronAPI) {
+      return window.electronAPI.db.getMemoriesForCharacter(characterId)
+    }
+    const memories: CharacterMemory[] = JSON.parse(localStorage.getItem('characterMemories') || '[]')
+    return memories
+      .filter(m => m.characterId === characterId)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 100)
+  }
+
+  async getAllMemories(): Promise<CharacterMemory[]> {
+    if (typeof window !== 'undefined' && window.electronAPI) {
+      return window.electronAPI.db.getAllMemories()
+    }
+    return JSON.parse(localStorage.getItem('characterMemories') || '[]')
+  }
+
+  async updateMemory(memoryId: string, updates: Partial<CharacterMemory>): Promise<boolean> {
+    if (typeof window !== 'undefined' && window.electronAPI) {
+      return window.electronAPI.db.updateMemory(memoryId, updates)
+    }
+    const memories: CharacterMemory[] = JSON.parse(localStorage.getItem('characterMemories') || '[]')
+    const idx = memories.findIndex(m => m.id === memoryId)
+    if (idx === -1) return false
+    memories[idx] = { ...memories[idx], ...updates, updatedAt: new Date().toISOString() }
+    localStorage.setItem('characterMemories', JSON.stringify(memories))
+    return true
+  }
+
+  async deleteMemory(memoryId: string): Promise<boolean> {
+    if (typeof window !== 'undefined' && window.electronAPI) {
+      return window.electronAPI.db.deleteMemory(memoryId)
+    }
+    const memories: CharacterMemory[] = JSON.parse(localStorage.getItem('characterMemories') || '[]')
+    localStorage.setItem('characterMemories', JSON.stringify(memories.filter(m => m.id !== memoryId)))
+    return true
+  }
+
   // Export/Import operations
-  async exportSessions(): Promise<{ version: string; exportDate: string; sessions: ChatSession[] }> {
+  async exportSessions(): Promise<{ version?: string; exportDate?: string; sessions: ChatSession[] }> {
     return this.api.exportSessions()
   }
 
-  async importSessions(data: any): Promise<number> {
+  async importSessions(data: { sessions: ChatSession[]; characters?: Character[]; memories?: CharacterMemory[] }): Promise<number> {
     return this.api.importSessions(data)
   }
 
@@ -180,6 +230,61 @@ export class DatabaseService {
     return this.importSessions(data)
   }
 
+  // Saved script operations
+  async createSavedScript(script: SavedScript): Promise<string> {
+    if (typeof window !== 'undefined' && window.electronAPI) {
+      return window.electronAPI.db.createSavedScript(script)
+    }
+    const scripts = await this.getAllSavedScripts()
+    scripts.push(script)
+    localStorage.setItem('savedScripts', JSON.stringify(scripts))
+    return script.id
+  }
+
+  async getAllSavedScripts(): Promise<SavedScript[]> {
+    if (typeof window !== 'undefined' && window.electronAPI) {
+      return window.electronAPI.db.getAllSavedScripts()
+    }
+    const stored = localStorage.getItem('savedScripts')
+    return stored ? JSON.parse(stored) : []
+  }
+
+  async updateSavedScript(scriptId: string, updates: Partial<SavedScript>): Promise<boolean> {
+    if (typeof window !== 'undefined' && window.electronAPI) {
+      return window.electronAPI.db.updateSavedScript(scriptId, updates)
+    }
+    const scripts = await this.getAllSavedScripts()
+    const idx = scripts.findIndex(s => s.id === scriptId)
+    if (idx === -1) return false
+    scripts[idx] = { ...scripts[idx], ...updates, updatedAt: new Date().toISOString() }
+    localStorage.setItem('savedScripts', JSON.stringify(scripts))
+    return true
+  }
+
+  async deleteSavedScript(scriptId: string): Promise<boolean> {
+    if (typeof window !== 'undefined' && window.electronAPI) {
+      return window.electronAPI.db.deleteSavedScript(scriptId)
+    }
+    const scripts = await this.getAllSavedScripts()
+    const filtered = scripts.filter(s => s.id !== scriptId)
+    if (filtered.length === scripts.length) return false
+    localStorage.setItem('savedScripts', JSON.stringify(filtered))
+    return true
+  }
+
+  async executeScript(code: string, timeoutMs?: number): Promise<ScriptExecutionResult> {
+    if (typeof window !== 'undefined' && window.electronAPI?.executeScript) {
+      return window.electronAPI.executeScript(code, timeoutMs)
+    }
+    return {
+      success: false,
+      stdout: '',
+      stderr: 'Script execution is only available in the desktop app.',
+      exitCode: 1,
+      timedOut: false,
+    }
+  }
+
   // Migration helper
   async migrateFromLocalStorage(): Promise<void> {
     if (typeof window === 'undefined' || !window.electronAPI) return
@@ -197,7 +302,7 @@ export class DatabaseService {
         
         for (const session of sessions) {
           // Ensure messages have proper timestamps
-          session.messages = session.messages.map((msg: any) => ({
+          session.messages = session.messages.map((msg: ChatMessage) => ({
             ...msg,
             timestamp: new Date(msg.timestamp)
           }))

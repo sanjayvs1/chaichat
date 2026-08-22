@@ -1,4 +1,4 @@
-import { Bot, Cpu } from 'lucide-react'
+import { Bot, Cpu, Monitor } from 'lucide-react'
 import type { AIProvider } from '../types/ollama'
 import {
   Select,
@@ -21,6 +21,8 @@ export function ProviderSelector({ selectedProvider, onProviderChange, disabled 
         return <Cpu className="h-4 w-4" />
       case 'groq':
         return <Bot className="h-4 w-4" />
+      case 'lmstudio':
+        return <Monitor className="h-4 w-4" />
       default:
         return <Cpu className="h-4 w-4" />
     }
@@ -32,6 +34,8 @@ export function ProviderSelector({ selectedProvider, onProviderChange, disabled 
         return 'Ollama'
       case 'groq':
         return 'Groq'
+      case 'lmstudio':
+        return 'LM Studio'
       default:
         return provider
     }
@@ -39,7 +43,7 @@ export function ProviderSelector({ selectedProvider, onProviderChange, disabled 
 
   return (
     <Select value={selectedProvider} onValueChange={onProviderChange} disabled={disabled}>
-      <SelectTrigger className="w-full sm:w-32 h-8 text-sm" aria-label="Select AI provider">
+      <SelectTrigger className="w-full sm:w-36 h-8 text-sm" aria-label="Select AI provider">
         <SelectValue>
           <div className="flex items-center space-x-2">
             {getProviderIcon(selectedProvider)}
@@ -52,6 +56,12 @@ export function ProviderSelector({ selectedProvider, onProviderChange, disabled 
           <div className="flex items-center space-x-2">
             <Cpu className="h-4 w-4" />
             <span>Ollama</span>
+          </div>
+        </SelectItem>
+        <SelectItem value="lmstudio" className="text-sm">
+          <div className="flex items-center space-x-2">
+            <Monitor className="h-4 w-4" />
+            <span>LM Studio</span>
           </div>
         </SelectItem>
         <SelectItem value="groq" className="text-sm">

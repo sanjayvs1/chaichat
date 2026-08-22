@@ -2,6 +2,8 @@ import { app, BrowserWindow, Menu, shell, ipcMain, dialog } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { promises as fs } from 'fs'
+import { execFile } from 'child_process'
+import os from 'os'
 import DatabaseService from './database.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -165,6 +167,13 @@ function setupIpcHandlers(db) {
   ipcMain.handle('db:deleteCharacter', async (event, characterId) => db.deleteCharacter(characterId));
   ipcMain.handle('db:searchCharacters', async (event, query) => db.searchCharacters(query));
 
+  // Character memory operations
+  ipcMain.handle('db:createMemory', async (event, memory) => db.createMemory(memory));
+  ipcMain.handle('db:getMemoriesForCharacter', async (event, characterId) => db.getMemoriesForCharacter(characterId));
+  ipcMain.handle('db:getAllMemories', async () => db.getAllMemories());
+  ipcMain.handle('db:updateMemory', async (event, memoryId, updates) => db.updateMemory(memoryId, updates));
+  ipcMain.handle('db:deleteMemory', async (event, memoryId) => db.deleteMemory(memoryId));
+
   // Export/Import operations
   ipcMain.handle('db:exportSessions', async () => db.exportSessions());
   ipcMain.handle('db:importSessions', async (event, data) => db.importSessions(data));
@@ -191,6 +200,57 @@ function setupIpcHandlers(db) {
   ipcMain.handle('fs:readFile', async (event, filePath) => {
     const data = await fs.readFile(filePath, 'utf8')
     return data
+  })
+
+  // Saved script operations
+  ipcMain.handle('db:createSavedScript', async (event, script) => db.createSavedScript(script))
+  ipcMain.handle('db:getAllSavedScripts', async () => db.getAllSavedScripts())
+  ipcMain.handle('db:updateSavedScript', async (event, scriptId, updates) => db.updateSavedScript(scriptId, updates))
+  ipcMain.handle('db:deleteSavedScript', async (event, scriptId) => db.deleteSavedScript(scriptId))
+
+  // Python script execution
+  ipcMain.handle('script:execute', async (event, code, timeoutMs = 30000) => {
+    const tmpDir = os.tmpdir()
+    const scriptPath = path.join(tmpDir, `chaichat_script_${Date.now()}.py`)
+
+    try {
+      await fs.writeFile(scriptPath, code, 'utf8')
+
+      const pythonCmd = process.platform === 'win32' ? 'python' : 'python3'
+
+      return await new Promise((resolve) => {
+        const proc = execFile(pythonCmd, [scriptPath], { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+          fs.unlink(scriptPath).catch(() => {})
+
+          if (error) {
+            resolve({
+              success: false,
+              stdout: stdout || '',
+              stderr: stderr || error.message,
+              exitCode: error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? -1 : (proc.exitCode ?? 1),
+              timedOut: error.killed || false,
+            })
+          } else {
+            resolve({
+              success: true,
+              stdout: stdout || '',
+              stderr: stderr || '',
+              exitCode: 0,
+              timedOut: false,
+            })
+          }
+        })
+      })
+    } catch (error) {
+      await fs.unlink(scriptPath).catch(() => {})
+      return {
+        success: false,
+        stdout: '',
+        stderr: error.message,
+        exitCode: 1,
+        timedOut: false,
+      }
+    }
   })
 }
 

@@ -1,8 +1,9 @@
 import { useState, useRef, useMemo, memo } from 'react'
-import { ChevronDown, ChevronRight, Clock, MessageSquare, SortAsc, Download, Upload, MoreHorizontal, ChevronLeft } from 'lucide-react'
+import { ChevronDown, ChevronRight, Clock, MessageSquare, SortAsc, Download, Upload, MoreHorizontal, ChevronLeft, Users, X } from 'lucide-react'
 import type { ChatSession, Character } from '../types/ollama'
 import { ChatSessionItem } from './ChatSessionItem'
 import { Button } from './ui/button'
+import { CharacterAvatar } from './CharacterAvatar'
 import { 
   DropdownMenu,
   DropdownMenuContent,
@@ -282,7 +283,33 @@ export const ChatSessionList = memo(function ChatSessionList({
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
   const [isImporting, setIsImporting] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
+  const [filterCharacterId, setFilterCharacterId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Characters that appear in at least one session (for the filter row)
+  const knownCharacters = useMemo(() => {
+    const ids = new Set<string>()
+    sessions.forEach((s) => {
+      if (s.participantIds?.length) {
+        s.participantIds.forEach((id) => ids.add(id))
+      } else if (s.characterId) {
+        ids.add(s.characterId)
+      }
+    })
+    return Array.from(ids)
+      .map((id) => characters.find((c) => c.id === id))
+      .filter((c): c is Character => !!c)
+  }, [sessions, characters])
+
+  // Apply the character filter before grouping/pagination
+  const visibleSessions = useMemo(() => {
+    if (!filterCharacterId) return sessions
+    return sessions.filter(
+      (s) =>
+        s.participantIds?.includes(filterCharacterId) ||
+        (!s.participantIds && s.characterId === filterCharacterId)
+    )
+  }, [sessions, filterCharacterId])
 
   // Memoized session handlers to prevent unnecessary re-renders
   const sessionHandlers = useMemo(() => ({
@@ -322,11 +349,11 @@ export const ChatSessionList = memo(function ChatSessionList({
     }
   }
 
-  // Pagination for list view
+  // Pagination for list view (uses the filtered set)
   const paginatedListSessions = useMemo(() => {
     if (viewMode !== 'list') return { sessions: [], totalPages: 0, totalSessions: 0 }
     
-    const sorted = sortedSessions(sortBy)
+    const sorted = sortedSessions(sortBy).filter((s) => visibleSessions.includes(s))
     const startIndex = (currentPage - 1) * ITEMS_PER_PAGE
     const endIndex = startIndex + ITEMS_PER_PAGE
     
@@ -335,7 +362,23 @@ export const ChatSessionList = memo(function ChatSessionList({
       totalPages: Math.ceil(sorted.length / ITEMS_PER_PAGE),
       totalSessions: sorted.length
     }
-  }, [sortedSessions, sortBy, currentPage, viewMode])
+  }, [sortedSessions, sortBy, currentPage, viewMode, visibleSessions])
+
+  // Group the (filtered) sessions by date
+  const groupedSessions = useMemo(() => {
+    const allGroups = getSessionsByDateGroup()
+    if (!filterCharacterId) return allGroups
+    const matches = (s: ChatSession) =>
+      s.participantIds?.includes(filterCharacterId) ||
+      (!s.participantIds && s.characterId === filterCharacterId)
+    return {
+      today: allGroups.today.filter(matches),
+      yesterday: allGroups.yesterday.filter(matches),
+      thisWeek: allGroups.thisWeek.filter(matches),
+      thisMonth: allGroups.thisMonth.filter(matches),
+      older: allGroups.older.filter(matches)
+    }
+  }, [getSessionsByDateGroup, filterCharacterId])
 
   const handleSortChange = (newSortBy: SortBy) => {
     setSortBy(newSortBy)
@@ -351,11 +394,9 @@ export const ChatSessionList = memo(function ChatSessionList({
     setCurrentPage(page)
   }
 
-  if (sessions.length === 0) {
+  if (visibleSessions.length === 0 && !filterCharacterId) {
     return <EmptyState />
   }
-
-  const groupedSessions = getSessionsByDateGroup()
 
   return (
     <div className="flex flex-col h-full">
@@ -373,7 +414,7 @@ export const ChatSessionList = memo(function ChatSessionList({
       {/* Header with controls */}
       <div className="flex items-center justify-between px-2 py-1.5 border-b">
         <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">
-          Chat History {sessions.length > ITEMS_PER_PAGE && `(${sessions.length})`}
+          Chat History {visibleSessions.length > 0 && `(${visibleSessions.length})`}
         </h3>
         
         <div className="flex items-center gap-1">
@@ -406,8 +447,61 @@ export const ChatSessionList = memo(function ChatSessionList({
         </div>
       </div>
 
+      {/* Character filter row */}
+      {knownCharacters.length > 0 && (
+        <div className="flex items-center gap-1 px-2 py-1.5 border-b overflow-x-auto scrollbar-thin">
+          <Users className="h-3 w-3 text-muted-foreground shrink-0 mr-0.5" />
+          <button
+            onClick={() => setFilterCharacterId(null)}
+            className={cn(
+              'shrink-0 rounded-full border px-2 py-0.5 text-[10px] transition-colors',
+              !filterCharacterId
+                ? 'border-primary bg-primary/10 text-foreground'
+                : 'border-border text-muted-foreground hover:bg-muted'
+            )}
+          >
+            All
+          </button>
+          {knownCharacters.map((character) => (
+            <button
+              key={character.id}
+              onClick={() => setFilterCharacterId(filterCharacterId === character.id ? null : character.id)}
+              title={`Chats with ${character.name}`}
+              className={cn(
+                'shrink-0 flex items-center gap-1 rounded-full border pl-0.5 pr-1.5 py-0.5 text-[10px] transition-colors',
+                filterCharacterId === character.id
+                  ? 'border-primary bg-primary/10 text-foreground'
+                  : 'border-border text-muted-foreground hover:bg-muted'
+              )}
+            >
+              <CharacterAvatar
+                avatar={character.avatar}
+                name={character.name}
+                className="h-4 w-4 text-[8px]"
+              />
+              <span className="max-w-16 truncate">{character.name}</span>
+            </button>
+          ))}
+          {filterCharacterId && (
+            <button
+              onClick={() => setFilterCharacterId(null)}
+              className="shrink-0 text-muted-foreground hover:text-foreground"
+              title="Clear filter"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Session Display */}
       <div className="flex-1 overflow-y-auto">
+        {visibleSessions.length === 0 && filterCharacterId ? (
+          <div className="text-center py-8 text-muted-foreground px-2">
+            <MessageSquare className="h-6 w-6 mx-auto mb-2 opacity-50" />
+            <p className="text-xs">No chats with this character yet</p>
+          </div>
+        ) : (
         <div className="space-y-0.5 p-0.5">
           {viewMode === 'grouped' ? (
             GROUP_CONFIG.map(({ key, title }) => (
@@ -443,6 +537,7 @@ export const ChatSessionList = memo(function ChatSessionList({
             </div>
           )}
         </div>
+        )}
       </div>
 
       {/* Pagination Controls */}

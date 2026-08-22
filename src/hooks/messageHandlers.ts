@@ -1,25 +1,244 @@
-import type { ChatMessage, Character, AIProvider, ProviderStatus } from "../types/ollama";
+import type { ChatMessage, Character, AIProvider, ProviderStatus, ChatSession } from "../types/ollama";
 import { OllamaService } from "../services/ollama";
 import { GroqService } from "../services/groq";
+import { LMStudioService } from "../services/lmstudio";
 import { dbService } from "../services/database";
-import { startTransition } from "react";
+import type { CharacterMemory } from "../types/ollama";
+import { startTransition as startTransitionSafe } from "react";
 
 export interface MessageHandlerParams {
   selectedModel: string;
   selectedProvider: AIProvider;
   isLoading: boolean;
   currentSessionId: string | null;
-  messages: ChatMessage[];
+  // Read the latest messages at generation time (avoids stale closures during ask-all)
+  getMessages: () => ChatMessage[];
   systemPrompt: string;
-  selectedCharacter?: Character;
-  chatSummary: string;
+  // Characters that should respond to this message (empty = plain assistant mode)
+  targets: Character[];
   providerStatus: ProviderStatus;
   setIsLoading: React.Dispatch<React.SetStateAction<boolean>>;
   setError: React.Dispatch<React.SetStateAction<string | null>>;
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
-  setChatSummary: React.Dispatch<React.SetStateAction<string>>;
-  setSessions: React.Dispatch<React.SetStateAction<any[]>>;
+  setSessions: React.Dispatch<React.SetStateAction<ChatSession[]>>;
   abortControllerRef: React.MutableRefObject<AbortController | null>;
+}
+
+// Context window tuning
+const MAX_HISTORY_MESSAGES = 24;
+const MAX_MEMORIES_IN_PROMPT = 30;
+const MAX_MEMORIES_PER_CHARACTER = 40;
+const MEMORY_EXTRACTION_MIN_INTERVAL_MS = 60_000;
+
+// Throttle memory extraction per character (module-level so it survives re-renders)
+const lastExtractionAt = new Map<string, number>();
+
+export function composeCharacterPrompt(character: Character): string {
+  if (character.systemPrompt && character.systemPrompt.trim()) {
+    return character.systemPrompt.trim();
+  }
+  const lines = [`You are ${character.name}.`];
+  if (character.tagline) lines.push("", character.tagline);
+  if (character.description) {
+    lines.push("", "Personality & background:", character.description.trim());
+  }
+  lines.push(
+    "",
+    "Roleplay guidelines:",
+    "- Always stay fully in character",
+    "- Speak, think, and react the way this character would",
+    "- Never break character or mention being an AI or language model",
+    "- Keep responses conversational, engaging and true to the character's voice"
+  );
+  return lines.join("\n");
+}
+
+function buildSystemMessages(
+  target: Character,
+  globalSystemPrompt: string,
+  memories: CharacterMemory[]
+): ChatMessage[] {
+  const systemMessages: ChatMessage[] = [];
+
+  let effectivePrompt = composeCharacterPrompt(target);
+  if (globalSystemPrompt.trim()) {
+    effectivePrompt += `\n\nAdditional instructions:\n${globalSystemPrompt.trim()}`;
+  }
+
+  systemMessages.push({
+    role: "system",
+    content: effectivePrompt,
+    id: crypto.randomUUID(),
+    timestamp: new Date(),
+  });
+
+  if (memories.length > 0) {
+    const memoryBlock = memories
+      .slice(0, MAX_MEMORIES_IN_PROMPT)
+      .map((m) => `- ${m.content}`)
+      .join("\n");
+    systemMessages.push({
+      role: "system",
+      content:
+        `Things you remember about the user and your past interactions ` +
+        `(recall these naturally when relevant, don't list them):\n${memoryBlock}`,
+      id: crypto.randomUUID(),
+      timestamp: new Date(),
+    });
+  }
+
+  return systemMessages;
+}
+
+/**
+ * Each character only sees their own slice of the conversation:
+ * - messages they authored (assistant messages with their characterId)
+ * - user messages addressed to them (or broadcast messages with no target)
+ */
+function filterContextForCharacter(messages: ChatMessage[], target?: Character): ChatMessage[] {
+  const relevant = target
+    ? messages.filter((m) => {
+        if (m.role === "assistant") return m.characterId === target.id;
+        if (m.role === "user") return !m.targetId || m.targetId === target.id;
+        return false;
+      })
+    : messages;
+
+  // Keep a recent chronological window (order preserved — LLMs need coherent flow)
+  return relevant.slice(-MAX_HISTORY_MESSAGES);
+}
+
+async function loadMemoriesForTarget(target: Character): Promise<CharacterMemory[]> {
+  try {
+    return await dbService.getMemoriesForCharacter(target.id);
+  } catch (err) {
+    console.warn("Failed to load memories for", target.name, err);
+    return [];
+  }
+}
+
+function providerStream(provider: AIProvider, model: string, messages: Array<Pick<ChatMessage, "role" | "content">>, signal: AbortSignal): AsyncGenerator<string, void, unknown> {
+  switch (provider) {
+    case "groq":
+      return GroqService.chatStream(model, messages, signal);
+    case "lmstudio":
+      return LMStudioService.chatStream(model, messages, signal);
+    case "ollama":
+    default:
+      return OllamaService.chatStream(model, messages, signal);
+  }
+}
+
+/**
+ * Extract durable facts from a recent exchange and store them as memories.
+ * Fire-and-forget; failures are logged but never interrupt chatting.
+ */
+async function extractMemoriesInBackground(
+  target: Character,
+  exchangeMessages: ChatMessage[],
+  sessionId: string | null,
+  provider: AIProvider,
+  model: string
+): Promise<void> {
+  if (!target.memoryEnabled) return;
+  if (!model) return;
+
+  // Throttle: at most one extraction run per interval per character
+  const now = Date.now();
+  const lastRun = lastExtractionAt.get(target.id) ?? 0;
+  if (now - lastRun < MEMORY_EXTRACTION_MIN_INTERVAL_MS) return;
+  lastExtractionAt.set(target.id, now);
+
+  try {
+    const transcript = exchangeMessages
+      .filter((m) => m.content.trim())
+      .slice(-8)
+      .map((m) =>
+        m.role === "user"
+          ? `User: ${m.content}`
+          : `${target.name}: ${m.content}`
+      )
+      .join("\n");
+
+    if (!transcript.trim()) return;
+
+    const prompt: ChatMessage[] = [      {
+        role: "system",
+        content:
+          "You extract long-term memories for a roleplay character. From the conversation excerpt, extract durable facts worth remembering in FUTURE conversations. Focus on facts about the USER (name, preferences, personal details, projects, people/pets in their life, ongoing topics, promises made) and important events in the conversation.\n" +
+          "Rules:\n" +
+          "- Output one fact per line, each starting with '- '\n" +
+          "- Each fact must be self-contained and specific (e.g. 'The user's cat is named Whiskers')\n" +
+          "- Maximum 3 facts. Skip small talk and transient details.\n" +
+          "- If there is nothing worth remembering, output exactly: NONE",
+        id: crypto.randomUUID(),
+        timestamp: new Date(),
+      },
+      {
+        role: "user",
+        content: transcript,
+        id: crypto.randomUUID(),
+        timestamp: new Date(),
+      },
+    ];
+
+    let result = "";
+    for await (const chunk of providerStream(provider, model, prompt, new AbortController().signal)) {
+      result += chunk;
+    }
+
+    const lines = result
+      .split("\n")
+      .map((l) => l.replace(/^[-*•]\s*/, "").trim())
+      .filter(
+        (l) =>
+          l &&
+          l.toUpperCase() !== "NONE" &&
+          l.length >= 8 &&
+          l.length <= 300 &&
+          !/^(here are|sure|i've extracted|extracted)/i.test(l)
+      );
+
+    if (lines.length === 0) return;
+
+    const existing = await dbService.getMemoriesForCharacter(target.id);
+
+    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+    const isDuplicate = (candidate: string) => {
+      const c = normalize(candidate);
+      return existing.some((m) => {
+        const e = normalize(m.content);
+        return e.includes(c) || c.includes(e);
+      });
+    };
+
+    for (const line of lines.slice(0, 3)) {
+      if (isDuplicate(line)) continue;
+
+      const nowIso = new Date().toISOString();
+      await dbService.createMemory({
+        id: crypto.randomUUID(),
+        characterId: target.id,
+        content: line,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        sourceSessionId: sessionId,
+      });
+      existing.unshift({ id: "", characterId: target.id, content: line, createdAt: nowIso, updatedAt: nowIso });
+    }
+
+    // Enforce cap: delete oldest beyond MAX_MEMORIES_PER_CHARACTER
+    const all = await dbService.getMemoriesForCharacter(target.id);
+    if (all.length > MAX_MEMORIES_PER_CHARACTER) {
+      for (const mem of all.slice(MAX_MEMORIES_PER_CHARACTER)) {
+        await dbService.deleteMemory(mem.id).catch(() => {});
+      }
+    }
+
+    console.log(`[memory] ${target.name}: stored ${Math.min(lines.length, 3)} candidate fact(s)`);
+  } catch (err) {
+    console.warn("Memory extraction failed (non-blocking):", err);
+  }
 }
 
 export const sendMessageHandler = async (
@@ -31,332 +250,206 @@ export const sendMessageHandler = async (
     selectedProvider,
     isLoading,
     currentSessionId,
-    messages,
+    getMessages,
     systemPrompt,
-    selectedCharacter,
-    chatSummary,
+    targets,
     providerStatus,
     setIsLoading,
     setError,
     setMessages,
-    setChatSummary,
     setSessions,
-    abortControllerRef
+    abortControllerRef,
   } = params;
 
   if (!selectedModel || isLoading || !currentSessionId) return;
-  
+
   // Check if the provider is available
   if (!providerStatus[selectedProvider]) {
-    setError(`${selectedProvider === 'groq' ? 'Groq' : 'Ollama'} is not connected. Please check your connection${selectedProvider === 'groq' ? ' and API key' : ''}.`);
+    setError(
+      `${selectedProvider === "groq" ? "Groq" : selectedProvider === "lmstudio" ? "LM Studio" : "Ollama"} is not connected. Please check your connection${selectedProvider === "groq" ? " and API key" : ""}.`
+    );
     return;
   }
 
   // Cancel any ongoing request with priority handling
   if (abortControllerRef.current) {
-    console.log('Cancelling previous request to prioritize new one');
     abortControllerRef.current.abort();
-    // Give a brief moment for cleanup
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
+  const currentMessages = getMessages();
+
+  // One broadcast user message when several characters will answer,
+  // otherwise address the single target directly.
+  const primaryTarget = targets[0];
   const userMessage: ChatMessage = {
     id: crypto.randomUUID(),
     role: "user",
     content,
     timestamp: new Date(),
+    targetId: primaryTarget?.id,
   };
 
-  const assistantMessage: ChatMessage = {
-    id: crypto.randomUUID(),
-    role: "assistant",
-    content: "",
-    timestamp: new Date(),
-    characterId: selectedCharacter?.id,
-  };
+  // Assistant placeholders for every responding character
+  const assistantMessages: ChatMessage[] = targets.map(
+    (target): ChatMessage => ({
+      id: crypto.randomUUID(),
+      role: "assistant",
+      content: "",
+      timestamp: new Date(),
+      characterId: target.id || undefined,
+    })
+  );
 
-  // Get current messages at the time of sending to avoid stale closures
-  const currentMessages = messages;
+  // Plain assistant mode (no characters involved)
+  if (targets.length === 0) {
+    assistantMessages.push({
+      id: crypto.randomUUID(),
+      role: "assistant",
+      content: "",
+      timestamp: new Date(),
+    });
+  }
 
-  // Set loading state and add messages immediately
   setIsLoading(true);
   setError(null);
-  setMessages((prev) => [...prev, userMessage, assistantMessage]);
+  setMessages((prev) => [...prev, userMessage, ...assistantMessages]);
 
-  // Always update updatedAt when a new message is sent
+  // Update session title / timestamps
   const nowIso = new Date().toISOString();
-  
-  // If this is the first user message in the session, update the session title
-  if (messages.length === 0) {
-    const cleanedTitle = content
-      .replace(/[\n\r]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 50);
-    await dbService.updateSession(currentSessionId, {
-      title: cleanedTitle || "New Conversation",
-      updatedAt: nowIso,
-    });
+  if (currentMessages.length === 0) {
+    const cleanedTitle =
+      content
+        .replace(/[\n\r]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 50) || "New Conversation";
+    await dbService.updateSession(currentSessionId, { title: cleanedTitle, updatedAt: nowIso });
     setSessions((prev) =>
       prev.map((s) =>
-        s.id === currentSessionId
-          ? {
-              ...s,
-              title: cleanedTitle || "New Conversation",
-              updatedAt: nowIso,
-            }
-          : s
+        s.id === currentSessionId ? { ...s, title: cleanedTitle, updatedAt: nowIso } : s
       )
     );
   } else {
-    await dbService.updateSession(currentSessionId, {
-      updatedAt: nowIso,
-    });
+    await dbService.updateSession(currentSessionId, { updatedAt: nowIso });
     setSessions((prev) =>
-      prev.map((s) =>
-        s.id === currentSessionId ? { ...s, updatedAt: nowIso } : s
-      )
+      prev.map((s) => (s.id === currentSessionId ? { ...s, updatedAt: nowIso } : s))
     );
   }
 
-  // Start streaming in a separate async function to avoid race conditions
-  const startStreaming = async () => {
-    try {
-      abortControllerRef.current = new AbortController();
-      // Construct effective system prompt with character information
-      let effectiveSystemPrompt = systemPrompt;
+  abortControllerRef.current = new AbortController();
+  const signal = abortControllerRef.current.signal;
 
-      if (selectedCharacter) {
-        const characterPrompt = `You are roleplaying as ${selectedCharacter.name}. ${selectedCharacter.description}
+  // Completed responses from this send — merged into context immediately so
+  // the next character always sees earlier answers even before React commits.
+  const pendingResponses: ChatMessage[] = [];
 
-Embody this character completely:
-- Respond in character at all times
-- Use the character's personality, speaking style, and expertise
-- Stay true to the character's role and background
-- Never break character or mention that you are an AI assistant
-- Respond as if you truly are ${selectedCharacter.name}`;
+  try {
+    // Sequentially generate a response for each target so each gets its own context.
+    for (let i = 0; i < Math.max(targets.length, 1); i++) {
+      if (signal.aborted) break;
 
-        if (effectiveSystemPrompt) {
-          effectiveSystemPrompt = `${characterPrompt}\n\n${effectiveSystemPrompt}`;
-        } else {
-          effectiveSystemPrompt = characterPrompt;
-        }
-      }
+      const target = targets[i];
+      const assistantMessage = targets.length > 0 ? assistantMessages[i] : assistantMessages[0];
 
-      // Always send system prompt (with character info) as first message
-      const systemMessage: ChatMessage[] = effectiveSystemPrompt
-        ? [
-            {
-              role: "system" as const,
-              content: effectiveSystemPrompt,
-              id: crypto.randomUUID(),
-              timestamp: new Date(),
-            },
-          ]
-        : [];
-      const summaryMessage: ChatMessage[] = chatSummary
-        ? [
-            {
-              role: "system" as const,
-              content: `Conversation summary: ${chatSummary}`,
-              id: crypto.randomUUID(),
-              timestamp: new Date(),
-            },
-          ]
-        : [];
-      // Smart context window management - optimize for relevance and token budget
-      const getOptimalMessageHistory = (messages: ChatMessage[], maxMessages = 6): ChatMessage[] => {
-        if (messages.length <= maxMessages) return messages;
-        
-        // Always include the most recent messages, but also consider:
-        // 1. Character-specific messages if using character
-        // 2. Longer, more substantive messages
-        // 3. Recent conversation context
-        
-        const recentMessages = messages.slice(-4); // Always include last 4
-        const remainingSlots = maxMessages - recentMessages.length;
-        
-        if (remainingSlots > 0 && messages.length > 4) {
-          const olderMessages = messages.slice(0, -4);
-          // Prioritize longer, more substantive messages from earlier context
-          const substantiveMessages = olderMessages
-            .filter(msg => msg.content.length > 50) // Filter short messages
-            .sort((a, b) => b.content.length - a.content.length) // Sort by length
-            .slice(0, remainingSlots);
-          
-          return [...substantiveMessages, ...recentMessages];
-        }
-        
-        return recentMessages;
-      };
+      // Fresh history includes any earlier responses from this same send (ask-all)
+      const latestList = getMessages();
+      const knownIds = new Set(latestList.map((m) => m.id));
+      const latestMessages = [...latestList, ...pendingResponses.filter((m) => !knownIds.has(m.id))];
+      const relevantHistory = filterContextForCharacter(latestMessages, target);
 
-      const optimizedMessages = getOptimalMessageHistory(currentMessages);
-      const messageHistory: ChatMessage[] = [
-        ...systemMessage,
-        ...summaryMessage,
-        ...optimizedMessages,
-        userMessage,
+      const memories = target && target.memoryEnabled !== false ? await loadMemoriesForTarget(target) : [];
+      const systemMessages = target ? buildSystemMessages(target, systemPrompt, memories) : systemPrompt.trim() ? [{ role: "system" as const, content: systemPrompt.trim(), id: crypto.randomUUID(), timestamp: new Date() }] : [];
+
+      const messageHistory: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+        ...systemMessages.map(({ role, content }) => ({ role, content })),
+        // Skip empty assistant placeholders (e.g., the response being generated now)
+        ...relevantHistory
+          .filter((m) => !(m.role === "assistant" && m.content === ""))
+          .map(({ role, content }) => ({ role, content })),
       ];
 
       let fullResponse = "";
       let lastUpdate = Date.now();
-      let updateTimeout: NodeJS.Timeout | null = null;
+      let updateTimeout: ReturnType<typeof setTimeout> | null = null;
 
-      // Use the appropriate service based on selected provider
-      const streamGenerator = selectedProvider === 'ollama' 
-        ? OllamaService.chatStream(selectedModel, messageHistory)
-        : GroqService.chatStream(selectedModel, messageHistory);
+      const pushUpdate = (snapshot: string) => {
+        startTransitionSafe(() => {
+          setMessages((prevMessages) =>
+            prevMessages.map((msg) =>
+              msg.id === assistantMessage.id ? { ...msg, content: snapshot } : msg
+            )
+          );
+        });
+      };
 
-      for await (const chunk of streamGenerator) {
-        // Check if request was cancelled or superseded by newer request
-        if (abortControllerRef.current?.signal.aborted) {
-          console.log('Stream cancelled due to abortion signal');
-          break;
-        }
-
+      for await (const chunk of providerStream(selectedProvider, selectedModel, messageHistory, signal)) {
+        if (signal.aborted) break;
         fullResponse += chunk;
-        const now = Date.now();
 
-        if (now - lastUpdate > 150) {
-          lastUpdate = now;
-          const contentSnapshot = fullResponse;
-
-          // Clear any pending update
+        const nowMs = Date.now();
+        if (nowMs - lastUpdate > 150) {
+          lastUpdate = nowMs;
           if (updateTimeout) {
             clearTimeout(updateTimeout);
             updateTimeout = null;
           }
-
-          startTransition(() => {
-            setMessages((prevMessages) =>
-              prevMessages.map((msg) =>
-                msg.id === assistantMessage.id
-                  ? { ...msg, content: contentSnapshot }
-                  : msg
-              )
-            );
-          });
-        } else {
-          // Debounce rapid updates - schedule an update if none is pending
-          if (!updateTimeout) {
-            updateTimeout = setTimeout(() => {
-              // Check if request is still active
-              if (!abortControllerRef.current?.signal.aborted) {
-                const contentSnapshot = fullResponse;
-                startTransition(() => {
-                  setMessages((prevMessages) =>
-                    prevMessages.map((msg) =>
-                      msg.id === assistantMessage.id
-                        ? { ...msg, content: contentSnapshot }
-                        : msg
-                    )
-                  );
-                });
-              }
-              updateTimeout = null;
-              lastUpdate = Date.now();
-            }, 250); // Reduced debounce delay for better responsiveness
-          }
+          pushUpdate(fullResponse);
+        } else if (!updateTimeout) {
+          updateTimeout = setTimeout(() => {
+            updateTimeout = null;
+            lastUpdate = Date.now();
+            if (!signal.aborted) pushUpdate(fullResponse);
+          }, 250);
         }
       }
 
-      // Clear any pending update and do final update
-      if (updateTimeout) {
-        clearTimeout(updateTimeout);
-      }
+      if (updateTimeout) clearTimeout(updateTimeout);
 
-      // Final update with full content (only if not cancelled)
-      if (!abortControllerRef.current?.signal.aborted) {
-        startTransition(() => {
-          setMessages((prevMessages) =>
-            prevMessages.map((msg) =>
-              msg.id === assistantMessage.id
-                ? { ...msg, content: fullResponse }
-                : msg
-            )
-          );
-        });
-      }
+      if (!signal.aborted) {
+        pushUpdate(fullResponse);
+        pendingResponses.push({ ...assistantMessage, content: fullResponse });
 
-      // Defer summary generation to avoid competing for resources during main response
-      setTimeout(async () => {
-        // Only generate summary if response is complete and not cancelled
-        if (!abortControllerRef.current?.signal.aborted && fullResponse.trim()) {
-          const newHistory = [
-            ...messageHistory,
-            {
-              role: "assistant" as const,
-              content: fullResponse,
-              id: crypto.randomUUID(),
-              timestamp: new Date(),
-            },
-          ];
-          
-          try {
-            const summaryStreamGenerator = selectedProvider === 'ollama'
-              ? OllamaService.chatStream(selectedModel, [
-                  {
-                    role: "system" as const,
-                    content: "Generate a concise summary of this conversation in 100 words or less.",
-                    id: crypto.randomUUID(),
-                    timestamp: new Date(),
-                  },
-                  ...newHistory,
-                ])
-              : GroqService.chatStream(selectedModel, [
-                  {
-                    role: "system" as const,
-                    content: "Generate a concise summary of this conversation in 100 words or less.",
-                    id: crypto.randomUUID(),
-                    timestamp: new Date(),
-                  },
-                  ...newHistory,
-                ]);
-            
-            const summaryResponse = summaryStreamGenerator;
-            let newSummary = "";
-            for await (const chunk of summaryResponse) {
-              newSummary += chunk;
-            }
-            setChatSummary(newSummary.trim());
-          } catch (error) {
-            console.warn('Summary generation failed:', error);
-            // Don't block main flow if summary fails
-          }
+        // Background per-character memory extraction
+        if (target) {
+          const exchange = [...relevantHistory, { ...userMessage, content }, { role: "assistant" as const, content: fullResponse, id: assistantMessage.id, timestamp: new Date() }];
+          setTimeout(() => {
+            extractMemoriesInBackground(target, exchange, currentSessionId, selectedProvider, selectedModel).catch(() => {});
+          }, 1500);
         }
-      }, 2000); // Increased delay to allow user to read response first
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
-        // Request was cancelled, remove the incomplete assistant message
-        setMessages((prevMessages) =>
-          prevMessages.filter((msg) => msg.id !== assistantMessage.id)
-        );
       } else {
-        const errorMessage =
-          err instanceof Error ? err.message : "Failed to get response";
-        setError(errorMessage);
-        setMessages((prevMessages) =>
-          prevMessages.map((msg) =>
-            msg.id === assistantMessage.id
-              ? { ...msg, content: `Error: ${errorMessage}` }
-              : msg
-          )
-        );
+        // Aborted mid-stream: keep partial response if there is one, drop empty placeholders
+        if (!fullResponse) {
+          setMessages((prevMessages) => prevMessages.filter((msg) => msg.id !== assistantMessage.id));
+        }
+        break;
       }
-    } finally {
-      setIsLoading(false);
-      abortControllerRef.current = null;
     }
-  };
-
-  // Start streaming
-  startStreaming();
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      // Remove empty assistant placeholders on cancel
+      setMessages((prevMessages) => prevMessages.filter((msg) => !(msg.role === "assistant" && msg.content === "")));
+    } else {
+      const errorMessage = err instanceof Error ? err.message : "Failed to get response";
+      setError(errorMessage);
+      setMessages((prevMessages) =>
+        prevMessages.map((msg) =>
+          assistantMessages.some((am) => am.id === msg.id) && msg.content === ""
+            ? { ...msg, content: `Error: ${errorMessage}` }
+            : msg
+        )
+      );
+    }
+  } finally {
+    setIsLoading(false);
+    abortControllerRef.current = null;
+  }
 };
 
 export const searchChatsHandler = async (
   query: string,
   messages: ChatMessage[],
-  sessions: any[]
+  sessions: ChatSession[]
 ) => {
   if (!query.trim()) return [];
 

@@ -1,20 +1,22 @@
-import { Bot, User } from 'lucide-react'
-import { memo, useMemo } from 'react'
+import { User, Save, Copy, Check, CornerDownRight } from 'lucide-react'
+import { memo, useMemo, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Character, ChatMessage as ChatMessageType } from '../types/ollama'
-import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar'
-// import { Button } from './ui/button'
+import { CharacterAvatar } from './CharacterAvatar'
+import { Avatar, AvatarFallback } from './ui/avatar'
 import { cn } from '@/lib/utils'
 
 interface ChatMessageProps {
   message: ChatMessageType
   characters: Character[]
   isStreaming?: boolean
+  onSaveScript?: (code: string, language: string) => void
 }
 
-export const ChatMessage = memo(function ChatMessage({ message, characters, isStreaming = false }: ChatMessageProps) {
-  // const [copied, setCopied] = useState(false)
+export const ChatMessage = memo(function ChatMessage({ message, characters, isStreaming = false, onSaveScript }: ChatMessageProps) {
+  const [copiedBlock, setCopiedBlock] = useState<string | null>(null)
+  const [savedBlock, setSavedBlock] = useState<string | null>(null)
   const isUser = message.role === 'user'
   
   // Find the character for this message
@@ -22,21 +24,12 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
     if (isUser || !message.characterId) return null
     return characters.find(c => c.id === message.characterId) || null
   }, [isUser, message.characterId, characters])
-  
-  // const handleCopy = async () => {
-  //   try {
-  //     await navigator.clipboard.writeText(message.content)
-  //     setCopied(true)
-  //     setTimeout(() => setCopied(false), 2000)
-  //   } catch (error) {
-  //     console.error('Failed to copy text:', error)
-  //   }
-  // }
 
-  const getCharacterInitials = useMemo(() => {
-    if (!character?.name) return ''
-    return character.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2)
-  }, [character?.name])
+  // Who this user message was addressed to (multi-character chats)
+  const targetCharacter = useMemo(() => {
+    if (!isUser || !message.targetId) return null
+    return characters.find(c => c.id === message.targetId) || null
+  }, [isUser, message.targetId, characters])
 
   const formatTime = useMemo(() => {
     // Skip expensive formatting during streaming
@@ -72,8 +65,33 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
     return parts
   }
 
-  const Code = ({ inline, className, children }: { inline?: boolean; className?: string; children: any }) => {
-    // Inline code is enclosed in backticks in markdown
+  const extractTextContent = useCallback((node: unknown): string => {
+    if (typeof node === 'string') return node
+    if (typeof node === 'number') return String(node)
+    if (Array.isArray(node)) return node.map(extractTextContent).join('')
+    if (node && typeof node === 'object' && 'props' in node) {
+      const props = (node as { props?: { children?: unknown } }).props
+      if (props?.children !== undefined) return extractTextContent(props.children)
+    }
+    return ''
+  }, [])
+
+  const handleCopyBlock = useCallback((text: string, blockId: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedBlock(blockId)
+      setTimeout(() => setCopiedBlock(null), 2000)
+    })
+  }, [])
+
+  const handleSaveBlock = useCallback((code: string, language: string, blockId: string) => {
+    onSaveScript?.(code, language)
+    setSavedBlock(blockId)
+    setTimeout(() => setSavedBlock(null), 2000)
+  }, [onSaveScript])
+
+  let codeBlockIndex = 0
+
+  const Code = ({ inline, className, children }: { inline?: boolean; className?: string; children?: React.ReactNode }) => {
     if (inline) {
       return (
         <code className="rounded bg-muted px-1.5 py-0.5 text-[12px] font-mono">
@@ -81,16 +99,47 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
         </code>
       )
     }
-    // For fenced code blocks we just render the raw text inside a <code> element.
-    // The surrounding <pre> element will be provided by the Pre component below.
-    return <code className={className || ''}>{children}</code>
+    return <code className={className || ''} data-language={className?.replace('language-', '')}>{children}</code>
   }
 
-  // Dedicated renderer for fenced code blocks to avoid nested <pre>/<div> inside <p> warnings
-  const Pre = ({ className, children }: { className?: string; children: any }) => {
+  const Pre = ({ children }: { children?: React.ReactNode }) => {
+    // The rendered child of a <pre> is the <code> element; peek at its props for language info
+    const codeChild = (Array.isArray(children) ? children[0] : children) as
+      | { props?: { className?: string; 'data-language'?: string } }
+      | undefined
+    const language = codeChild?.props?.['data-language'] || codeChild?.props?.className?.replace('language-', '') || ''
+    const codeText = extractTextContent(children)
+    const blockId = `block-${codeBlockIndex++}`
+    const isPython = /^(python|py|python3)$/i.test(language)
+
     return (
-      <div className="my-2 overflow-hidden rounded-md border">
-        <pre className={`p-3 text-[12.5px] leading-relaxed overflow-auto font-mono ${className || ''}`}>
+      <div className="my-2 overflow-hidden rounded-md border group/code">
+        <div className="flex items-center justify-between bg-muted/60 px-3 py-1 border-b">
+          <span className="text-[11px] text-muted-foreground font-mono">
+            {language || 'code'}
+          </span>
+          <div className="flex items-center gap-1">
+            {isPython && onSaveScript && (
+              <button
+                onClick={() => handleSaveBlock(codeText, language, blockId)}
+                className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors px-1.5 py-0.5 rounded hover:bg-muted"
+                title="Save script"
+              >
+                {savedBlock === blockId ? <Check className="h-3 w-3 text-emerald-500" /> : <Save className="h-3 w-3" />}
+                <span>{savedBlock === blockId ? 'Saved' : 'Save'}</span>
+              </button>
+            )}
+            <button
+              onClick={() => handleCopyBlock(codeText, blockId)}
+              className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors px-1.5 py-0.5 rounded hover:bg-muted"
+              title="Copy code"
+            >
+              {copiedBlock === blockId ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+              <span>{copiedBlock === blockId ? 'Copied' : 'Copy'}</span>
+            </button>
+          </div>
+        </div>
+        <pre className="p-3 text-[12.5px] leading-relaxed overflow-auto font-mono">
           {children}
         </pre>
       </div>
@@ -113,19 +162,19 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
       )}>
         {/* Avatar */}
         <div className="flex-shrink-0">
-          <Avatar className="h-6 w-6">
-            {isUser ? (
+          {isUser ? (
+            <Avatar className="h-6 w-6">
               <AvatarFallback className="bg-primary/80 text-primary-foreground text-xs">
                 <User className="h-3 w-3" />
               </AvatarFallback>
-            ) : character?.avatar ? (
-              <AvatarImage src={character.avatar} alt={character?.name || 'Assistant'} />
-            ) : (
-              <AvatarFallback className="bg-muted-foreground/80 text-background text-xs">
-                {character ? getCharacterInitials : <Bot className="h-3 w-3" />}
-              </AvatarFallback>
-            )}
-          </Avatar>
+            </Avatar>
+          ) : (
+            <CharacterAvatar
+              avatar={character?.avatar}
+              name={character?.name || 'Assistant'}
+              className="h-6 w-6 text-[10px]"
+            />
+          )}
         </div>
 
         {/* Message content */}
@@ -134,6 +183,19 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
           isUser ? "items-end" : "items-start",
           isUser ? "max-w-[70%] chat-bubble-user" : "max-w-full chat-bubble-assistant"
         )}>
+          {/* Character name label for assistant messages in character chats */}
+          {!isUser && character && (
+            <span className="text-[10px] font-medium text-muted-foreground mb-1 px-2">
+              {character.name}
+            </span>
+          )}
+          {/* Target indicator for user messages aimed at a specific character */}
+          {isUser && targetCharacter && (
+            <span className="flex items-center gap-1 text-[10px] text-muted-foreground mb-1 px-2">
+              <CornerDownRight className="h-3 w-3" />
+              to {targetCharacter.name}
+            </span>
+          )}
           {/* Message bubble */}
           <div className={cn(
             "rounded-2xl px-4 py-3 shadow-sm",
@@ -158,8 +220,8 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       components={{
-                        pre: Pre as any,
-                        code: Code as any,
+                        pre: Pre,
+                        code: Code as React.ComponentType<{ className?: string; children?: React.ReactNode }>,
                         p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
                         ul: ({ children }) => <ul className="list-disc pl-5 mb-2 space-y-1">{children}</ul>,
                         ol: ({ children }) => <ol className="list-decimal pl-5 mb-2 space-y-1">{children}</ol>,
@@ -215,13 +277,12 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
     </div>
   )
 }, (prevProps, nextProps) => {
-  // Rerender only when the message object identity or key fields change
   if (prevProps.message.id !== nextProps.message.id) return false;
   if (prevProps.message.content !== nextProps.message.content) return false;
   if (prevProps.message.role !== nextProps.message.role) return false;
   if (prevProps.message.characterId !== nextProps.message.characterId) return false;
   if (prevProps.isStreaming !== nextProps.isStreaming) return false;
-  // Treat characters as stable by length-only to avoid deep compares
   if (prevProps.characters.length !== nextProps.characters.length) return false;
+  if (prevProps.onSaveScript !== nextProps.onSaveScript) return false;
   return true;
 })

@@ -1,8 +1,10 @@
 import { useState } from 'react'
-import { Eye, EyeOff, Key, Save } from 'lucide-react'
+import { Eye, EyeOff, Key, Save, Monitor, Cpu } from 'lucide-react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { GroqService } from '../services/groq'
+import { LMStudioService } from '../services/lmstudio'
+import { OllamaService } from '../services/ollama'
 
 interface ApiKeyManagerProps {
   onApiKeySet?: () => void
@@ -13,6 +15,8 @@ export function ApiKeyManager({ onApiKeySet }: ApiKeyManagerProps) {
   const [showApiKey, setShowApiKey] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [message, setMessage] = useState('')
+  const [lmStudioUrl, setLmStudioUrl] = useState(LMStudioService.getBaseUrl())
+  const [ollamaUrl, setOllamaUrl] = useState(OllamaService.getBaseUrl())
 
   const handleSave = async () => {
     if (!apiKey.trim()) {
@@ -35,7 +39,7 @@ export function ApiKeyManager({ onApiKeySet }: ApiKeyManagerProps) {
       } else {
         setMessage('API key saved but validation failed. Please check your key.')
       }
-    } catch (error) {
+    } catch {
       setMessage('Failed to validate API key. Please check your key.')
     } finally {
       setIsSaving(false)
@@ -115,6 +119,70 @@ export function ApiKeyManager({ onApiKeySet }: ApiKeyManagerProps) {
             </a>
           </p>
           <p className="mt-1">Your API key is stored locally in your browser.</p>
+        </div>
+      </div>
+
+      {/* Local server URLs */}
+      <div className="space-y-3 border-t pt-4">
+        <h3 className="text-sm font-medium">Local servers</h3>
+
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Cpu className="h-3.5 w-3.5" />
+            Ollama server URL
+          </div>
+          <div className="flex gap-2">
+            <Input
+              value={ollamaUrl}
+              onChange={(e) => setOllamaUrl(e.target.value)}
+              placeholder="http://127.0.0.1:11434"
+              className="text-sm h-8"
+            />
+            <Button
+              onClick={async () => {
+                OllamaService.setBaseUrl(ollamaUrl)
+                const ok = await OllamaService.checkHealth()
+                setMessage(ok ? 'Ollama URL saved and connected!' : 'Saved, but could not reach Ollama.')
+                if (ok) onApiKeySet?.()
+              }}
+              variant="outline"
+              size="sm"
+              className="h-8 shrink-0"
+            >
+              <Save className="h-3 w-3" />
+            </Button>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Monitor className="h-3.5 w-3.5" />
+            LM Studio server URL
+          </div>
+          <div className="flex gap-2">
+            <Input
+              value={lmStudioUrl}
+              onChange={(e) => setLmStudioUrl(e.target.value)}
+              placeholder="http://127.0.0.1:1234"
+              className="text-sm h-8"
+            />
+            <Button
+              onClick={async () => {
+                LMStudioService.setBaseUrl(lmStudioUrl)
+                const ok = await LMStudioService.checkHealth()
+                setMessage(ok ? 'LM Studio URL saved and connected!' : 'Saved, but could not reach LM Studio. Start the server in the Developer tab.')
+                if (ok) onApiKeySet?.()
+              }}
+              variant="outline"
+              size="sm"
+              className="h-8 shrink-0"
+            >
+              <Save className="h-3 w-3" />
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            In LM Studio: open the Developer tab, load a model and click Start Server.
+          </p>
         </div>
       </div>
     </div>

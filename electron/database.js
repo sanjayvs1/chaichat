@@ -30,6 +30,7 @@ class DatabaseService {
       
       // Enable WAL mode for better concurrent access
       this.db.pragma('journal_mode = WAL')
+      this.db.pragma('foreign_keys = ON')
       
       this.createTables()
       console.log('Database initialized successfully at:', dbPath)
@@ -106,6 +107,12 @@ class DatabaseService {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN selected_model TEXT`);
     }
 
+    // Ensure participant_ids column exists in sessions table (multi-character support)
+    const hasParticipantIds = sessionColumns.some(col => col.name === 'participant_ids');
+    if (!hasParticipantIds) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN participant_ids TEXT`);
+    }
+
     // Ensure character_id column exists in messages table (migration for multi-character support)
     const messageColumns = this.db.prepare("PRAGMA table_info(messages)").all();
     const hasMessageCharacterId = messageColumns.some(col => col.name === 'character_id');
@@ -113,8 +120,32 @@ class DatabaseService {
       this.db.exec(`ALTER TABLE messages ADD COLUMN character_id TEXT`);
     }
 
-    // Migrate characters table if background column exists
+    // Ensure target_character_id column exists in messages table (multi-character support)
+    const hasMessageTargetId = messageColumns.some(col => col.name === 'target_character_id');
+    if (!hasMessageTargetId) {
+      this.db.exec(`ALTER TABLE messages ADD COLUMN target_character_id TEXT`);
+    }
+
+    // Character roleplay columns (migration for enhanced characters)
     const charColumns = this.db.prepare("PRAGMA table_info(characters)").all();
+    const hasTagline = charColumns.some(col => col.name === 'tagline');
+    if (!hasTagline) {
+      this.db.exec(`ALTER TABLE characters ADD COLUMN tagline TEXT`);
+    }
+    const hasSystemPrompt = charColumns.some(col => col.name === 'system_prompt');
+    if (!hasSystemPrompt) {
+      this.db.exec(`ALTER TABLE characters ADD COLUMN system_prompt TEXT`);
+    }
+    const hasGreeting = charColumns.some(col => col.name === 'greeting');
+    if (!hasGreeting) {
+      this.db.exec(`ALTER TABLE characters ADD COLUMN greeting TEXT`);
+    }
+    const hasMemoryEnabled = charColumns.some(col => col.name === 'memory_enabled');
+    if (!hasMemoryEnabled) {
+      this.db.exec(`ALTER TABLE characters ADD COLUMN memory_enabled INTEGER DEFAULT 1`);
+    }
+
+    // Migrate characters table if legacy background column exists
     const hasBackground = charColumns.some(col => col.name === 'background');
     if (hasBackground) {
       console.log('Migrating characters table: removing background column');
@@ -168,6 +199,44 @@ class DatabaseService {
       )
     `)
 
+    // Create saved_scripts table for persisting Python scripts from LLM responses
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS saved_scripts (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        code TEXT NOT NULL,
+        language TEXT NOT NULL DEFAULT 'python',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_run_at TEXT,
+        session_id TEXT,
+        FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE SET NULL
+      )
+    `)
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_saved_scripts_created_at ON saved_scripts (created_at);
+      CREATE INDEX IF NOT EXISTS idx_saved_scripts_name ON saved_scripts (name);
+    `)
+
+    // Create character_memories table for per-character long-term memory
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS character_memories (
+        id TEXT PRIMARY KEY,
+        character_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        source_session_id TEXT,
+        FOREIGN KEY (character_id) REFERENCES characters (id) ON DELETE CASCADE
+      )
+    `)
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_character_memories_character_id ON character_memories (character_id);
+      CREATE INDEX IF NOT EXISTS idx_character_memories_created_at ON character_memories (created_at);
+    `)
+
     // Initialize default characters if none exist
     this.initializeDefaultCharacters()
   }
@@ -183,15 +252,63 @@ class DatabaseService {
           {
             id: crypto.randomUUID(),
             name: "Assistant",
+            tagline: "A helpful AI assistant",
             description: "A helpful AI assistant ready to help with any questions",
+            systemPrompt: "You are Assistant, a helpful, friendly and knowledgeable AI assistant. Answer questions clearly and accurately. Use markdown formatting when helpful.",
+            greeting: "Hi! I'm your assistant. What can I help you with today?",
             isDefault: 1,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           },
           {
             id: crypto.randomUUID(),
-            name: "Coding Mentor", 
+            name: "Seraphina",
+            tagline: "Mysterious elven sorceress",
+            description: "An ancient elven sorceress from the Moonlit Forest. Wise, playful and a little mischievous, with centuries of stories to tell.",
+            systemPrompt: `You are Seraphina, an ancient elven sorceress who has guarded the Moonlit Forest for over a thousand years.
+
+Personality: wise but playful, curious about the modern world, speaks in an elegant yet warm manner, occasionally uses archaic phrasing, deeply loyal to those she trusts.
+
+Background: You have seen empires rise and fall. You wield moonlight magic and speak with forest creatures. You are fascinated by technology and the modern world, which you find both delightful and strange.
+
+Roleplay guidelines:
+- Always stay fully in character as Seraphina
+- Reference your long life and magical nature naturally in conversation
+- Never mention being an AI or language model
+- Keep responses conversational, vivid and engaging`,
+            greeting: "*steps out from between silver-barked trees, moonlight catching in her hair* Ah... a visitor walks my forest after all these years. Come closer, traveler — tell me, what brings you to the Moonlit Woods?",
+            isDefault: 0,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            id: crypto.randomUUID(),
+            name: "Detective Rex Carter",
+            tagline: "Hard-boiled 1940s private eye",
+            description: "A noir private investigator from 1947 Los Angeles. Cynical exterior, honest heart, always one step behind trouble.",
+            systemPrompt: `You are Detective Rex Carter, a private investigator working the mean streets of 1947 Los Angeles.
+
+Personality: world-weary but principled, dry wit, speaks in clipped noir prose, observant, distrustful of authority, secretly sentimental.
+
+Background: Ex-cop turned PI. You've seen it all — crooked politicians, femme fatales, dirty money. You drink black coffee and cheap whiskey, and you always get your man.
+
+Roleplay guidelines:
+- Always stay fully in character as Rex Carter
+- Narrate your observations in classic noir style ("The rain hammered the window like it owed me money")
+- Never mention being an AI or language model
+- Keep responses atmospheric and engaging`,
+            greeting: "The door creaked open. I didn't look up right away — in this town, rushing things gets you dead. *leans back in chair* Well, well. Sit down, pal. Tell me who's causing you trouble, and maybe I can lose some of mine.",
+            isDefault: 0,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            id: crypto.randomUUID(),
+            name: "Coding Mentor",
+            tagline: "Patient senior developer",
             description: "An expert programmer who helps with coding questions and best practices",
+            systemPrompt: "You are Codey, a patient and encouraging senior software developer with decades of experience across languages and paradigms. You explain concepts clearly with practical examples, review code constructively, and teach best practices without being condescending. Prefer simple, maintainable solutions over clever ones.",
+            greeting: "Hey! Ready to write some good code together? What are we working on?",
             isDefault: 0,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
@@ -199,7 +316,10 @@ class DatabaseService {
           {
             id: crypto.randomUUID(),
             name: "Creative Writer",
-            description: "A creative writing assistant for stories, poems, and imaginative content", 
+            tagline: "Imaginative storyteller",
+            description: "A creative writing assistant for stories, poems, and imaginative content",
+            systemPrompt: "You are Muse, a creative writing companion bursting with imagination. You help brainstorm ideas, draft stories and poems, develop characters, and refine prose. You suggest vivid imagery, interesting narrative structures, and you're never afraid of a bold creative choice.",
+            greeting: "Ooh, a blank page! My favorite kind of adventure. What shall we create together?",
             isDefault: 0,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
@@ -207,15 +327,19 @@ class DatabaseService {
         ]
 
         const stmt = this.db.prepare(`
-          INSERT INTO characters (id, name, description, is_default, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?)
+          INSERT INTO characters (id, name, tagline, description, system_prompt, greeting, memory_enabled, is_default, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
 
         for (const character of defaultCharacters) {
           stmt.run(
             character.id,
             character.name,
+            character.tagline || null,
             character.description,
+            character.systemPrompt || null,
+            character.greeting || null,
+            1,
             character.isDefault,
             character.createdAt,
             character.updatedAt
@@ -232,8 +356,8 @@ class DatabaseService {
   // Session operations
   createSession(session) {
     const stmt = this.db.prepare(`
-      INSERT INTO sessions (id, title, created_at, updated_at, character_id, provider, selected_model)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO sessions (id, title, created_at, updated_at, character_id, participant_ids, provider, selected_model)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `)
     
     try {
@@ -243,6 +367,7 @@ class DatabaseService {
         session.createdAt, 
         new Date().toISOString(), 
         session.characterId || null,
+        session.participantIds ? JSON.stringify(session.participantIds) : null,
         session.provider || null,
         session.selectedModel || null
       )
@@ -259,20 +384,31 @@ class DatabaseService {
     }
   }
 
+  parseParticipantIds(raw) {
+    if (!raw) return undefined
+    try {
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) && parsed.length > 0 ? parsed : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   getAllSessions() {
     try {
       const sessionsStmt = this.db.prepare(`
         SELECT id, title, created_at as createdAt, updated_at as updatedAt, 
-               character_id as characterId, provider, selected_model as selectedModel
+               character_id as characterId, participant_ids as participantIdsRaw,
+               provider, selected_model as selectedModel
         FROM sessions
-        ORDER BY created_at DESC
+        ORDER BY updated_at DESC
       `)
       
       const sessions = sessionsStmt.all()
       
-      // Get messages for each session (include character_id for multi-character support)
+      // Get messages for each session (include character_id/target for multi-character support)
       const messagesStmt = this.db.prepare(`
-        SELECT id, role, content, timestamp, character_id as characterId
+        SELECT id, role, content, timestamp, character_id as characterId, target_character_id as targetId
         FROM messages
         WHERE session_id = ?
         ORDER BY timestamp ASC
@@ -280,13 +416,16 @@ class DatabaseService {
       
       return sessions.map(session => ({
         ...session,
+        participantIdsRaw: undefined,
         characterId: session.characterId || undefined,
+        participantIds: this.parseParticipantIds(session.participantIdsRaw),
         provider: session.provider || undefined,
         selectedModel: session.selectedModel || undefined,
         messages: messagesStmt.all(session.id).map(msg => ({
           ...msg,
           timestamp: new Date(msg.timestamp),
           characterId: msg.characterId || undefined,
+          targetId: msg.targetId || undefined,
         }))
       }))
     } catch (error) {
@@ -299,7 +438,8 @@ class DatabaseService {
     try {
       const sessionStmt = this.db.prepare(`
         SELECT id, title, created_at as createdAt, updated_at as updatedAt, 
-               character_id as characterId, provider, selected_model as selectedModel
+               character_id as characterId, participant_ids as participantIdsRaw,
+               provider, selected_model as selectedModel
         FROM sessions
         WHERE id = ?
       `)
@@ -308,7 +448,7 @@ class DatabaseService {
       if (!session) return null
       
     const messagesStmt = this.db.prepare(`
-        SELECT id, role, content, timestamp, character_id as characterId
+        SELECT id, role, content, timestamp, character_id as characterId, target_character_id as targetId
         FROM messages
         WHERE session_id = ?
         ORDER BY timestamp ASC
@@ -317,12 +457,15 @@ class DatabaseService {
       const messages = messagesStmt.all(sessionId).map(msg => ({
         ...msg,
         timestamp: new Date(msg.timestamp),
-        characterId: msg.characterId || undefined
+        characterId: msg.characterId || undefined,
+        targetId: msg.targetId || undefined
       }))
       
       return { 
         ...session, 
+        participantIdsRaw: undefined,
         characterId: session.characterId || undefined,
+        participantIds: this.parseParticipantIds(session.participantIdsRaw),
         provider: session.provider || undefined,
         selectedModel: session.selectedModel || undefined,
         messages 
@@ -346,6 +489,11 @@ class DatabaseService {
       if (updates.characterId !== undefined) {
         fields.push('character_id = ?')
         values.push(updates.characterId)
+      }
+      
+      if (updates.participantIds !== undefined) {
+        fields.push('participant_ids = ?')
+        values.push(JSON.stringify(updates.participantIds))
       }
       
       if (updates.provider !== undefined) {
@@ -395,8 +543,9 @@ class DatabaseService {
         id: newSessionId,
         title: newTitle,
         createdAt: new Date().toISOString(),
-        // Preserve the character association on duplicate
+        // Preserve the cast of characters on duplicate
         characterId: session.characterId || null,
+        participantIds: session.participantIds || (session.characterId ? [session.characterId] : undefined),
         messages: session.messages
       }
       
@@ -412,8 +561,8 @@ class DatabaseService {
   addMessages(sessionId, messages) {
     try {
       const stmt = this.db.prepare(`
-        INSERT OR IGNORE INTO messages (id, session_id, role, content, timestamp, character_id)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO messages (id, session_id, role, content, timestamp, character_id, target_character_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `)
       
       const transaction = this.db.transaction((msgs) => {
@@ -424,7 +573,8 @@ class DatabaseService {
             message.role,
             message.content,
             message.timestamp.toISOString(),
-            message.characterId || null
+            message.characterId || null,
+            message.targetId || null
           )
         }
       })
@@ -454,6 +604,11 @@ class DatabaseService {
       if (updates.characterId !== undefined) {
         fields.push('character_id = ?')
         values.push(updates.characterId)
+      }
+
+      if (updates.targetId !== undefined) {
+        fields.push('target_character_id = ?')
+        values.push(updates.targetId)
       }
       
       if (fields.length === 0) return false
@@ -533,15 +688,19 @@ class DatabaseService {
   createCharacter(character) {
     try {
       const stmt = this.db.prepare(`
-        INSERT INTO characters (id, name, description, avatar, is_default, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO characters (id, name, tagline, description, system_prompt, greeting, avatar, memory_enabled, is_default, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       
       stmt.run(
         character.id,
         character.name,
+        character.tagline || null,
         character.description,
+        character.systemPrompt || null,
+        character.greeting || null,
         character.avatar || null,
+        character.memoryEnabled === false ? 0 : 1,
         character.isDefault ? 1 : 0,
         character.createdAt,
         character.updatedAt
@@ -557,7 +716,8 @@ class DatabaseService {
   getAllCharacters() {
     try {
       const stmt = this.db.prepare(`
-        SELECT id, name, description, avatar, is_default as isDefault, 
+        SELECT id, name, tagline, description, system_prompt as systemPrompt, greeting, avatar,
+               memory_enabled as memoryEnabled, is_default as isDefault, 
                created_at as createdAt, updated_at as updatedAt
         FROM characters
         ORDER BY is_default DESC, name ASC
@@ -566,6 +726,10 @@ class DatabaseService {
       const characters = stmt.all()
       return characters.map(char => ({
         ...char,
+        systemPrompt: char.systemPrompt || undefined,
+        greeting: char.greeting || undefined,
+        tagline: char.tagline || undefined,
+        memoryEnabled: char.memoryEnabled === null ? true : Boolean(char.memoryEnabled),
         isDefault: Boolean(char.isDefault)
       }))
     } catch (error) {
@@ -577,7 +741,8 @@ class DatabaseService {
   getCharacter(characterId) {
     try {
       const stmt = this.db.prepare(`
-        SELECT id, name, description, avatar, is_default as isDefault, 
+        SELECT id, name, tagline, description, system_prompt as systemPrompt, greeting, avatar,
+               memory_enabled as memoryEnabled, is_default as isDefault, 
                created_at as createdAt, updated_at as updatedAt
         FROM characters
         WHERE id = ?
@@ -588,6 +753,10 @@ class DatabaseService {
       
       return {
         ...character,
+        systemPrompt: character.systemPrompt || undefined,
+        greeting: character.greeting || undefined,
+        tagline: character.tagline || undefined,
+        memoryEnabled: character.memoryEnabled === null ? true : Boolean(character.memoryEnabled),
         isDefault: Boolean(character.isDefault)
       }
     } catch (error) {
@@ -605,13 +774,29 @@ class DatabaseService {
         fields.push('name = ?')
         values.push(updates.name)
       }
+      if (updates.tagline !== undefined) {
+        fields.push('tagline = ?')
+        values.push(updates.tagline)
+      }
       if (updates.description !== undefined) {
         fields.push('description = ?')
         values.push(updates.description)
       }
+      if (updates.systemPrompt !== undefined) {
+        fields.push('system_prompt = ?')
+        values.push(updates.systemPrompt)
+      }
+      if (updates.greeting !== undefined) {
+        fields.push('greeting = ?')
+        values.push(updates.greeting)
+      }
       if (updates.avatar !== undefined) {
         fields.push('avatar = ?')
         values.push(updates.avatar)
+      }
+      if (updates.memoryEnabled !== undefined) {
+        fields.push('memory_enabled = ?')
+        values.push(updates.memoryEnabled ? 1 : 0)
       }
       if (updates.isDefault !== undefined) {
         fields.push('is_default = ?')
@@ -640,6 +825,24 @@ class DatabaseService {
       // First, update any sessions that reference this character
       const updateSessionsStmt = this.db.prepare('UPDATE sessions SET character_id = NULL WHERE character_id = ?')
       updateSessionsStmt.run(characterId)
+
+      // Clean up participant lists that include this character
+      const sessionsWithParticipant = this.db.prepare('SELECT id, participant_ids FROM sessions WHERE participant_ids LIKE ?').all(`%${characterId}%`)
+      for (const s of sessionsWithParticipant) {
+        const ids = this.parseParticipantIds(s.participant_ids)
+        if (ids && ids.includes(characterId)) {
+          const remaining = ids.filter(id => id !== characterId)
+          const updateStmt = this.db.prepare('UPDATE sessions SET participant_ids = ?, character_id = COALESCE(NULLIF(?, \'\'), character_id) WHERE id = ?')
+          updateStmt.run(
+            remaining.length > 0 ? JSON.stringify(remaining) : null,
+            remaining[0] || '',
+            s.id
+          )
+        }
+      }
+
+      // Delete the character's memories
+      this.db.prepare('DELETE FROM character_memories WHERE character_id = ?').run(characterId)
       
       // Then delete the character
       const stmt = this.db.prepare('DELETE FROM characters WHERE id = ?')
@@ -653,22 +856,117 @@ class DatabaseService {
   searchCharacters(query) {
     try {
       const stmt = this.db.prepare(`
-        SELECT id, name, description, avatar, is_default as isDefault, 
+        SELECT id, name, tagline, description, system_prompt as systemPrompt, greeting, avatar,
+               memory_enabled as memoryEnabled, is_default as isDefault,
                created_at as createdAt, updated_at as updatedAt
         FROM characters
-        WHERE name LIKE ? OR description LIKE ?
+        WHERE name LIKE ? OR description LIKE ? OR IFNULL(tagline, '') LIKE ?
         ORDER BY is_default DESC, name ASC
       `)
       
       const searchTerm = `%${query}%`
-      const characters = stmt.all(searchTerm, searchTerm)
+      const characters = stmt.all(searchTerm, searchTerm, searchTerm)
       
       return characters.map(char => ({
         ...char,
+        systemPrompt: char.systemPrompt || undefined,
+        greeting: char.greeting || undefined,
+        tagline: char.tagline || undefined,
+        memoryEnabled: char.memoryEnabled === null ? true : Boolean(char.memoryEnabled),
         isDefault: Boolean(char.isDefault)
       }))
     } catch (error) {
       console.error('Error searching characters:', error)
+      throw error
+    }
+  }
+
+  // Character memory operations
+  createMemory(memory) {
+    try {
+      const stmt = this.db.prepare(`
+        INSERT INTO character_memories (id, character_id, content, created_at, updated_at, source_session_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `)
+      stmt.run(
+        memory.id,
+        memory.characterId,
+        memory.content,
+        memory.createdAt,
+        memory.updatedAt || memory.createdAt,
+        memory.sourceSessionId || null
+      )
+      return memory.id
+    } catch (error) {
+      console.error('Error creating memory:', error)
+      throw error
+    }
+  }
+
+  getMemoriesForCharacter(characterId) {
+    try {
+      const stmt = this.db.prepare(`
+        SELECT id, character_id as characterId, content,
+               created_at as createdAt, updated_at as updatedAt,
+               source_session_id as sourceSessionId
+        FROM character_memories
+        WHERE character_id = ?
+        ORDER BY created_at DESC
+        LIMIT 100
+      `)
+      return stmt.all(characterId)
+    } catch (error) {
+      console.error('Error getting memories:', error)
+      throw error
+    }
+  }
+
+  getAllMemories() {
+    try {
+      const stmt = this.db.prepare(`
+        SELECT id, character_id as characterId, content,
+               created_at as createdAt, updated_at as updatedAt,
+               source_session_id as sourceSessionId
+        FROM character_memories
+        ORDER BY created_at DESC
+      `)
+      return stmt.all()
+    } catch (error) {
+      console.error('Error getting all memories:', error)
+      throw error
+    }
+  }
+
+  deleteMemory(memoryId) {
+    try {
+      const stmt = this.db.prepare('DELETE FROM character_memories WHERE id = ?')
+      return stmt.run(memoryId).changes > 0
+    } catch (error) {
+      console.error('Error deleting memory:', error)
+      throw error
+    }
+  }
+
+  updateMemory(memoryId, updates) {
+    try {
+      const fields = []
+      const values = []
+
+      if (updates.content !== undefined) {
+        fields.push('content = ?')
+        values.push(updates.content)
+      }
+
+      if (fields.length === 0) return false
+
+      fields.push('updated_at = ?')
+      values.push(new Date().toISOString())
+      values.push(memoryId)
+
+      const stmt = this.db.prepare(`UPDATE character_memories SET ${fields.join(', ')} WHERE id = ?`)
+      return stmt.run(...values).changes > 0
+    } catch (error) {
+      console.error('Error updating memory:', error)
       throw error
     }
   }
@@ -678,9 +976,11 @@ class DatabaseService {
     try {
       const sessions = this.getAllSessions()
       return {
-        version: '1.0',
+        version: '1.1',
         exportDate: new Date().toISOString(),
-        sessions: sessions
+        sessions: sessions,
+        characters: this.getAllCharacters(),
+        memories: this.getAllMemories()
       }
     } catch (error) {
       console.error('Error exporting sessions:', error)
@@ -696,6 +996,26 @@ class DatabaseService {
 
       let importedCount = 0
       const transaction = this.db.transaction(() => {
+        // Import characters first so references resolve
+        if (Array.isArray(data.characters)) {
+          for (const character of data.characters) {
+            const existing = this.getCharacter(character.id)
+            if (!existing) {
+              this.createCharacter(character)
+            }
+          }
+        }
+
+        // Import memories
+        if (Array.isArray(data.memories)) {
+          for (const memory of data.memories) {
+            const exists = this.db.prepare('SELECT 1 FROM character_memories WHERE id = ?').get(memory.id)
+            if (!exists && this.getCharacter(memory.characterId)) {
+              this.createMemory(memory)
+            }
+          }
+        }
+
         for (const session of data.sessions) {
           // Check if session already exists
           const existing = this.getSession(session.id)
@@ -745,6 +1065,88 @@ class DatabaseService {
     } catch (error) {
       console.error('Error importing from file:', error);
       throw error;
+    }
+  }
+
+  // Saved script operations
+  createSavedScript(script) {
+    try {
+      const stmt = this.db.prepare(`
+        INSERT INTO saved_scripts (id, name, code, language, created_at, updated_at, session_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `)
+      stmt.run(
+        script.id,
+        script.name,
+        script.code,
+        script.language || 'python',
+        script.createdAt,
+        script.updatedAt || script.createdAt,
+        script.sessionId || null
+      )
+      return script.id
+    } catch (error) {
+      console.error('Error creating saved script:', error)
+      throw error
+    }
+  }
+
+  getAllSavedScripts() {
+    try {
+      const stmt = this.db.prepare(`
+        SELECT id, name, code, language, created_at as createdAt, updated_at as updatedAt,
+               last_run_at as lastRunAt, session_id as sessionId
+        FROM saved_scripts
+        ORDER BY updated_at DESC
+      `)
+      return stmt.all()
+    } catch (error) {
+      console.error('Error getting saved scripts:', error)
+      throw error
+    }
+  }
+
+  updateSavedScript(scriptId, updates) {
+    try {
+      const fields = []
+      const values = []
+
+      if (updates.name !== undefined) {
+        fields.push('name = ?')
+        values.push(updates.name)
+      }
+      if (updates.code !== undefined) {
+        fields.push('code = ?')
+        values.push(updates.code)
+      }
+      if (updates.lastRunAt !== undefined) {
+        fields.push('last_run_at = ?')
+        values.push(updates.lastRunAt)
+      }
+
+      fields.push('updated_at = ?')
+      values.push(new Date().toISOString())
+      values.push(scriptId)
+
+      const stmt = this.db.prepare(`
+        UPDATE saved_scripts
+        SET ${fields.join(', ')}
+        WHERE id = ?
+      `)
+      return stmt.run(...values).changes > 0
+    } catch (error) {
+      console.error('Error updating saved script:', error)
+      throw error
+    }
+  }
+
+  deleteSavedScript(scriptId) {
+    try {
+      const stmt = this.db.prepare('DELETE FROM saved_scripts WHERE id = ?')
+      return stmt.run(scriptId).changes > 0
+    } catch (error) {
+      console.error('Error deleting saved script:', error)
+      throw error
     }
   }
 

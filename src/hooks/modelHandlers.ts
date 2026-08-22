@@ -1,6 +1,7 @@
 import type { AIModel, AIProvider, ProviderStatus } from "../types/ollama";
 import { OllamaService } from "../services/ollama";
 import { GroqService } from "../services/groq";
+import { LMStudioService } from "../services/lmstudio";
 
 export interface ModelHandlerParams {
   setModels: React.Dispatch<React.SetStateAction<AIModel[]>>;
@@ -10,10 +11,10 @@ export interface ModelHandlerParams {
   setError: React.Dispatch<React.SetStateAction<string | null>>;
   setProviderStatus: React.Dispatch<React.SetStateAction<ProviderStatus>>;
   setIsOllamaConnected: React.Dispatch<React.SetStateAction<boolean>>;
-  setLastUsedModels: React.Dispatch<React.SetStateAction<{ollama?: string, groq?: string}>>;
+  setLastUsedModels: React.Dispatch<React.SetStateAction<{ollama?: string, groq?: string, lmstudio?: string}>>;
   selectedModel: string;
   selectedProvider: AIProvider;
-  lastUsedModels: {ollama?: string, groq?: string};
+  lastUsedModels: {ollama?: string, groq?: string, lmstudio?: string};
   isInitialized: boolean;
 }
 
@@ -21,15 +22,17 @@ export const checkConnectionsHandler = async (
   setIsOllamaConnected: React.Dispatch<React.SetStateAction<boolean>>,
   setProviderStatus: React.Dispatch<React.SetStateAction<ProviderStatus>>
 ) => {
-  const [ollamaConnected, groqConnected] = await Promise.all([
+  const [ollamaConnected, groqConnected, lmStudioConnected] = await Promise.all([
     OllamaService.checkHealth(),
-    GroqService.checkHealth()
+    GroqService.checkHealth(),
+    LMStudioService.checkHealth()
   ]);
   
   setIsOllamaConnected(ollamaConnected);
   setProviderStatus({
     ollama: ollamaConnected,
-    groq: groqConnected
+    groq: groqConnected,
+    lmstudio: lmStudioConnected
   });
 };
 
@@ -51,9 +54,10 @@ export const loadModelsHandler = async (params: ModelHandlerParams) => {
   setError(null);
   
   try {
-    const [ollamaConnected, groqConnected] = await Promise.all([
+    const [ollamaConnected, groqConnected, lmStudioConnected] = await Promise.all([
       OllamaService.checkHealth(),
-      GroqService.checkHealth()
+      GroqService.checkHealth(),
+      LMStudioService.checkHealth()
     ]);
 
     const allModels: AIModel[] = [];
@@ -92,10 +96,28 @@ export const loadModelsHandler = async (params: ModelHandlerParams) => {
       }
     }
 
+    // Load LM Studio models if connected
+    if (lmStudioConnected) {
+      try {
+        const response = await LMStudioService.getModels();
+        const lmStudioModels: AIModel[] = (response.data || []).map(m => ({
+          name: m.id,
+          provider: 'lmstudio' as const,
+          id: m.id,
+          object: m.object,
+          owned_by: m.owned_by
+        }));
+        allModels.push(...lmStudioModels);
+      } catch (err) {
+        console.error('Failed to load LM Studio models:', err);
+      }
+    }
+
     setModels(allModels);
     setProviderStatus({
       ollama: ollamaConnected,
-      groq: groqConnected
+      groq: groqConnected,
+      lmstudio: lmStudioConnected
     });
     setIsOllamaConnected(ollamaConnected);
 
@@ -114,6 +136,14 @@ export const loadModelsHandler = async (params: ModelHandlerParams) => {
         }
       }
       
+      if (!modelToSelect && lmStudioConnected && lastUsedModels.lmstudio) {
+        const lastLMStudioModel = allModels.find(m => m.name === lastUsedModels.lmstudio && m.provider === 'lmstudio');
+        if (lastLMStudioModel) {
+          modelToSelect = lastLMStudioModel.name;
+          providerToSelect = 'lmstudio';
+        }
+      }
+
       if (!modelToSelect && groqConnected && lastUsedModels.groq) {
         const lastGroqModel = allModels.find(m => m.name === lastUsedModels.groq && m.provider === 'groq');
         if (lastGroqModel) {
@@ -124,20 +154,19 @@ export const loadModelsHandler = async (params: ModelHandlerParams) => {
 
       // Fall back to default logic if no last used model found
       if (!modelToSelect) {
-        // Prefer Ollama gemma2:1b if available
-        const gemmaModel = allModels.find((m) => m.name === "gemma2:1b" && m.provider === 'ollama');
-        if (gemmaModel) {
-          modelToSelect = "gemma2:1b";
-          providerToSelect = 'ollama';
-        } else if (ollamaConnected) {
-          // If Ollama is connected, prefer it
+        if (ollamaConnected) {
           const ollamaModels = allModels.filter(m => m.provider === 'ollama');
           if (ollamaModels.length > 0) {
             modelToSelect = ollamaModels[0].name;
             providerToSelect = 'ollama';
           }
+        } else if (lmStudioConnected) {
+          const lmStudioModels = allModels.filter(m => m.provider === 'lmstudio');
+          if (lmStudioModels.length > 0) {
+            modelToSelect = lmStudioModels[0].name;
+            providerToSelect = 'lmstudio';
+          }
         } else if (groqConnected) {
-          // Otherwise use Groq
           const groqModels = allModels.filter(m => m.provider === 'groq');
           if (groqModels.length > 0) {
             modelToSelect = groqModels[0].name;
@@ -163,7 +192,7 @@ export const handleModelChangeHandler = (
   model: string,
   selectedProvider: AIProvider,
   setSelectedModel: React.Dispatch<React.SetStateAction<string>>,
-  setLastUsedModels: React.Dispatch<React.SetStateAction<{ollama?: string, groq?: string}>>
+  setLastUsedModels: React.Dispatch<React.SetStateAction<{ollama?: string, groq?: string, lmstudio?: string}>>
 ) => {
   setSelectedModel(model);
   // Update last used model for current provider
@@ -171,12 +200,11 @@ export const handleModelChangeHandler = (
     ...prev,
     [selectedProvider]: model
   }));
-  console.log(`Updated last used model for ${selectedProvider}:`, model);
 };
 
 export const handleProviderChangeHandler = (
   newProvider: AIProvider,
-  lastUsedModels: {ollama?: string, groq?: string},
+  lastUsedModels: {ollama?: string, groq?: string, lmstudio?: string},
   models: AIModel[],
   setSelectedProvider: React.Dispatch<React.SetStateAction<AIProvider>>,
   setSelectedModel: React.Dispatch<React.SetStateAction<string>>
@@ -192,7 +220,6 @@ export const handleProviderChangeHandler = (
     const availableModel = models.find(m => m.name === lastUsedModel && m.provider === newProvider);
     if (availableModel) {
       setSelectedModel(lastUsedModel);
-      console.log(`Restored last used model for ${newProvider}:`, lastUsedModel);
       return;
     }
   }
@@ -201,6 +228,5 @@ export const handleProviderChangeHandler = (
   const providerModels = models.filter(m => m.provider === newProvider);
   if (providerModels.length > 0) {
     setSelectedModel(providerModels[0].name);
-    console.log(`Selected default model for ${newProvider}:`, providerModels[0].name);
   }
 };
