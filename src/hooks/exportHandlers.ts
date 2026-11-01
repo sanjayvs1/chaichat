@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatSession } from "../types/ollama";
+import type { ChatMessage, ChatSession } from "../types/chat";
 import { dbService } from "../services/database";
 
 export const exportSessionsHandler = async (messages: ChatMessage[]) => {

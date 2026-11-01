@@ -1,8 +1,11 @@
-import { User, Save, Copy, Check, CornerDownRight } from 'lucide-react'
+import { User, Save, Copy, Check, CornerDownRight, ChevronRight, Pencil, RefreshCw, GitFork, X, Brain } from 'lucide-react'
 import { memo, useMemo, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { Character, ChatMessage as ChatMessageType } from '../types/ollama'
+import remarkBreaks from 'remark-breaks'
+import { Button } from './ui/button'
+import { Textarea } from './ui/textarea'
+import type { Character, ChatMessage as ChatMessageType } from '../types/chat'
 import { CharacterAvatar } from './CharacterAvatar'
 import { Avatar, AvatarFallback } from './ui/avatar'
 import { cn } from '@/lib/utils'
@@ -12,12 +15,18 @@ interface ChatMessageProps {
   characters: Character[]
   isStreaming?: boolean
   onSaveScript?: (code: string, language: string) => void
+  onEditMessage?: (messageId: string, newContent: string, resend: boolean) => void
+  onResendMessage?: (messageId: string) => void
+  onBranchFromMessage?: (messageId: string) => void
 }
 
-export const ChatMessage = memo(function ChatMessage({ message, characters, isStreaming = false, onSaveScript }: ChatMessageProps) {
+export const ChatMessage = memo(function ChatMessage({ message, characters, isStreaming = false, onSaveScript, onEditMessage, onResendMessage, onBranchFromMessage }: ChatMessageProps) {
   const [copiedBlock, setCopiedBlock] = useState<string | null>(null)
   const [savedBlock, setSavedBlock] = useState<string | null>(null)
+  const [isEditing, setIsEditing] = useState(false)
+  const [editText, setEditText] = useState('')
   const isUser = message.role === 'user'
+  const canActOn = isUser && !isStreaming && !isEditing
   
   // Find the character for this message
   const character = useMemo(() => {
@@ -46,17 +55,27 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
 
   function splitThinkBlocks(text: string): Array<{ kind: 'md' | 'think'; content: string }> {
     const parts: Array<{ kind: 'md' | 'think'; content: string }> = []
-    const regex = /<think>[\s\S]*?<\/think>/g
+    // Matches closed think blocks (<think>, <thinking>, <thought>, <reasoning>),
+    // plus an unclosed one at the end (still streaming or truncated)
+    const regex = /<(think|thinking|thought|reasoning)(?:\s[^>]*)?>[\s\S]*?(?:<\/\1\s*>|$)/gi
     let lastIndex = 0
     let match: RegExpExecArray | null
     while ((match = regex.exec(text)) !== null) {
       const start = match.index
       const end = regex.lastIndex
+      const inner = match[0].replace(/^<(?:think|thinking|thought|reasoning)(?:\s[^>]*)?>/i, '').replace(/<\/(?:think|thinking|thought|reasoning)\s*>$/i, '')
+      if (!inner.trim()) {
+        // Empty think block - skip it entirely but keep surrounding markdown flowing
+        if (start > lastIndex) {
+          parts.push({ kind: 'md', content: text.slice(lastIndex, start) })
+        }
+        lastIndex = end
+        continue
+      }
       if (start > lastIndex) {
         parts.push({ kind: 'md', content: text.slice(lastIndex, start) })
       }
-      const thinkInner = match[0].replace(/^<think>/, '').replace(/<\/think>$/, '')
-      parts.push({ kind: 'think', content: thinkInner.trim() })
+      parts.push({ kind: 'think', content: inner.trim() })
       lastIndex = end
     }
     if (lastIndex < text.length) {
@@ -64,6 +83,15 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
     }
     return parts
   }
+
+  const thinkParts = useMemo(
+    () => splitThinkBlocks(message.content),
+    [message.content]
+  )
+  const visibleStreamText = useMemo(
+    () => thinkParts.filter(p => p.kind === 'md').map(p => p.content).join(''),
+    [thinkParts]
+  )
 
   const extractTextContent = useCallback((node: unknown): string => {
     if (typeof node === 'string') return node
@@ -88,6 +116,18 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
     setSavedBlock(blockId)
     setTimeout(() => setSavedBlock(null), 2000)
   }, [onSaveScript])
+
+  const startEditing = useCallback(() => {
+    setEditText(message.content)
+    setIsEditing(true)
+  }, [message.content])
+
+  const commitEdit = useCallback((resend: boolean) => {
+    const trimmed = editText.trim()
+    if (!trimmed) return
+    setIsEditing(false)
+    onEditMessage?.(message.id, trimmed, resend)
+  }, [editText, message.id, onEditMessage])
 
   let codeBlockIndex = 0
 
@@ -205,20 +245,61 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
             isStreaming && "animate-pulse"
           )}>
             {isStreaming ? (
-              // During streaming, render plain text for performance
+              // During streaming, render plain text for performance (think blocks hidden)
               <div className="text-sm leading-relaxed">
-                <pre className="whitespace-pre-wrap break-words font-sans">
-                  {message.content}
-                  <span className="inline-block w-1.5 h-3 bg-current/60 ml-1 animate-pulse" />
-                </pre>
+                {visibleStreamText ? (
+                  <pre className="whitespace-pre-wrap break-words font-sans">
+                    {visibleStreamText}
+                    <span className="inline-block w-1.5 h-3 bg-current/60 ml-1 animate-pulse" />
+                  </pre>
+                ) : thinkParts.some(p => p.kind === 'think') ? (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Brain className="h-3.5 w-3.5 animate-pulse" />
+                    <span className="text-xs italic">Thinking…</span>
+                    <span className="inline-block w-1.5 h-3 bg-current/60 animate-pulse" />
+                  </div>
+                ) : (
+                  <pre className="whitespace-pre-wrap break-words font-sans">
+                    <span className="inline-block w-1.5 h-3 bg-current/60 animate-pulse" />
+                  </pre>
+                )}
+              </div>
+            ) : isEditing && isUser ? (
+              <div className="w-full min-w-[240px] space-y-2">
+                <Textarea
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                      e.preventDefault()
+                      commitEdit(true)
+                    } else if (e.key === 'Escape') {
+                      setIsEditing(false)
+                    }
+                  }}
+                  className="min-h-[80px] max-h-[240px] text-sm bg-background"
+                  autoFocus
+                  aria-label="Edit message"
+                />
+                <div className="flex items-center justify-end gap-2">
+                  <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setIsEditing(false)}>
+                    <X className="h-3 w-3 mr-1" /> Cancel
+                  </Button>
+                  <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => commitEdit(false)}>
+                    Save only
+                  </Button>
+                  <Button size="sm" className="h-7 text-xs" onClick={() => commitEdit(true)}>
+                    <RefreshCw className="h-3 w-3 mr-1" /> Save &amp; resend
+                  </Button>
+                </div>
               </div>
             ) : (
               // When not streaming, use full markdown parsing
-              splitThinkBlocks(message.content).map((part, idx) =>
+              thinkParts.map((part, idx) =>
                 part.kind === 'md' ? (
                   <div key={idx} className="text-sm leading-relaxed text-[15px]">
                     <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
+                      remarkPlugins={[remarkGfm, remarkBreaks]}
                       components={{
                         pre: Pre,
                         code: Code as React.ComponentType<{ className?: string; children?: React.ReactNode }>,
@@ -233,6 +314,7 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
                         h1: ({ children }) => <h1 className="mt-2 mb-1 text-base font-semibold">{children}</h1>,
                         h2: ({ children }) => <h2 className="mt-2 mb-1 text-sm font-semibold">{children}</h2>,
                         h3: ({ children }) => <h3 className="mt-2 mb-1 text-xs font-semibold">{children}</h3>,
+                        hr: () => null,
                         table: ({ children }) => (
                           <div className="w-full overflow-auto mb-2">
                             <table className="w-full text-xs border-collapse">{children}</table>
@@ -248,12 +330,13 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
                     </ReactMarkdown>
                   </div>
                 ) : (
-                  <details key={idx} className="mt-2 border-t border-border/30">
-                    <summary className="cursor-pointer select-none text-xs text-muted-foreground py-1">
+                  <details key={idx} className="mt-2 mb-1 group/think">
+                    <summary className="cursor-pointer select-none list-none inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors py-0.5">
+                      <ChevronRight className="h-3 w-3 transition-transform group-open/think:rotate-90" />
                       Model reasoning
                     </summary>
-                    <div className="pt-2">
-                      <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed bg-background/50 rounded p-2">
+                    <div className="pt-2 mt-1">
+                      <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-muted-foreground bg-background/50 rounded p-2">
                         {part.content}
                       </pre>
                     </div>
@@ -264,13 +347,52 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
           </div>
 
           {/* Timestamp - minimal and positioned appropriately */}
-          {!isStreaming && (
+          {!isStreaming && !isEditing && (
             <span className={cn(
               "text-[10px] text-muted-foreground mt-1 px-2",
               isUser ? "text-right" : "text-left"
             )}>
               {formatTime}
             </span>
+          )}
+
+          {/* User message actions: edit / resend / branch */}
+          {canActOn && (onEditMessage || onResendMessage || onBranchFromMessage) && (
+            <div className={cn(
+              "flex items-center gap-0.5 mt-0.5 px-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity",
+              isUser && "flex-row-reverse"
+            )}>
+              {onEditMessage && (
+                <button
+                  onClick={startEditing}
+                  className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                  title="Edit message"
+                  aria-label="Edit message"
+                >
+                  <Pencil className="h-3 w-3" />
+                </button>
+              )}
+              {onResendMessage && (
+                <button
+                  onClick={() => onResendMessage(message.id)}
+                  className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                  title="Resend from here (removes later messages)"
+                  aria-label="Resend from here"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                </button>
+              )}
+              {onBranchFromMessage && (
+                <button
+                  onClick={() => onBranchFromMessage(message.id)}
+                  className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                  title="Branch into a new chat from here"
+                  aria-label="Branch into a new chat"
+                >
+                  <GitFork className="h-3 w-3" />
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -284,5 +406,8 @@ export const ChatMessage = memo(function ChatMessage({ message, characters, isSt
   if (prevProps.isStreaming !== nextProps.isStreaming) return false;
   if (prevProps.characters.length !== nextProps.characters.length) return false;
   if (prevProps.onSaveScript !== nextProps.onSaveScript) return false;
+  if (prevProps.onEditMessage !== nextProps.onEditMessage) return false;
+  if (prevProps.onResendMessage !== nextProps.onResendMessage) return false;
+  if (prevProps.onBranchFromMessage !== nextProps.onBranchFromMessage) return false;
   return true;
 })

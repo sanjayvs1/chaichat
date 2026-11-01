@@ -31,6 +31,7 @@ class DatabaseService {
       // Enable WAL mode for better concurrent access
       this.db.pragma('journal_mode = WAL')
       this.db.pragma('foreign_keys = ON')
+      this.db.pragma('secure_delete = ON')
       
       this.createTables()
       console.log('Database initialized successfully at:', dbPath)
@@ -235,6 +236,21 @@ class DatabaseService {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_character_memories_character_id ON character_memories (character_id);
       CREATE INDEX IF NOT EXISTS idx_character_memories_created_at ON character_memories (created_at);
+    `)
+
+    // Create llm_connections table. Keys are encrypted by the OS and never exposed over db: IPC.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS llm_connections (
+        id TEXT PRIMARY KEY,
+        preset_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        default_model TEXT,
+        api_key_encrypted BLOB,
+        key_hint TEXT,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT
+      )
     `)
 
     // Initialize default characters if none exist
@@ -628,6 +644,21 @@ Roleplay guidelines:
     }
   }
 
+  deleteMessages(messageIds) {
+    try {
+      if (!Array.isArray(messageIds) || messageIds.length === 0) return 0
+      const stmt = this.db.prepare('DELETE FROM messages WHERE id = ?')
+      const transaction = this.db.transaction((ids) => {
+        for (const id of ids) stmt.run(id)
+      })
+      transaction(messageIds)
+      return messageIds.length
+    } catch (error) {
+      console.error('Error deleting messages:', error)
+      throw error
+    }
+  }
+
   // Search operations
   searchMessages(query) {
     try {
@@ -680,6 +711,100 @@ Roleplay guidelines:
       stmt.run(key, value, new Date().toISOString())
     } catch (error) {
       console.error('Error setting value:', error)
+      throw error
+    }
+  }
+
+  // LLM connection operations
+  getLlmConnections() {
+    try {
+      return this.db.prepare(`
+        SELECT id, preset_id as presetId, name, base_url as baseUrl, default_model as defaultModel,
+               api_key_encrypted as apiKeyEncrypted, key_hint as keyHint,
+               created_at as createdAt, last_used_at as lastUsedAt
+        FROM llm_connections
+        ORDER BY COALESCE(last_used_at, created_at) DESC
+      `).all()
+    } catch (error) {
+      console.error('Error getting LLM connections:', error)
+      throw error
+    }
+  }
+
+  getLlmConnection(id) {
+    try {
+      return this.db.prepare(`
+        SELECT id, preset_id as presetId, name, base_url as baseUrl, default_model as defaultModel,
+               api_key_encrypted as apiKeyEncrypted, key_hint as keyHint,
+               created_at as createdAt, last_used_at as lastUsedAt
+        FROM llm_connections
+        WHERE id = ?
+      `).get(id) ?? null
+    } catch (error) {
+      console.error('Error getting LLM connection:', error)
+      throw error
+    }
+  }
+
+  saveLlmConnection(connection) {
+    try {
+      this.db.prepare(`
+        INSERT OR REPLACE INTO llm_connections
+          (id, preset_id, name, base_url, default_model, api_key_encrypted, key_hint, created_at, last_used_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        connection.id,
+        connection.presetId,
+        connection.name,
+        connection.baseUrl,
+        connection.defaultModel || null,
+        connection.apiKeyEncrypted || null,
+        connection.keyHint || null,
+        connection.createdAt,
+        connection.lastUsedAt || null
+      )
+    } catch (error) {
+      console.error('Error saving LLM connection:', error)
+      throw error
+    }
+  }
+
+  deleteLlmConnection(id) {
+    try {
+      return this.db.prepare('DELETE FROM llm_connections WHERE id = ?').run(id).changes > 0
+    } catch (error) {
+      console.error('Error deleting LLM connection:', error)
+      throw error
+    }
+  }
+
+  touchLlmConnection(id, usedAt) {
+    try {
+      this.db.prepare('UPDATE llm_connections SET last_used_at = ? WHERE id = ?').run(usedAt, id)
+    } catch (error) {
+      console.error('Error updating LLM connection:', error)
+      throw error
+    }
+  }
+
+  clearLlmConnectionKeys() {
+    try {
+      this.db.prepare('UPDATE llm_connections SET api_key_encrypted = NULL, key_hint = NULL').run()
+      // The WAL can still hold the old ciphertext until checkpointed
+      this.db.pragma('wal_checkpoint(TRUNCATE)')
+    } catch (error) {
+      console.error('Error clearing LLM connection keys:', error)
+      throw error
+    }
+  }
+
+  getSessionProviders() {
+    try {
+      return this.db.prepare('SELECT DISTINCT provider FROM sessions WHERE provider IS NOT NULL')
+        .all()
+        .map((row) => row.provider)
+    } catch (error) {
+      console.error('Error getting session providers:', error)
       throw error
     }
   }

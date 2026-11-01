@@ -1,4 +1,4 @@
-import type { Character } from '../types/ollama'
+import type { Character } from '../types/chat'
 
 export const DEFAULT_CHARACTERS: Omit<Character, 'id' | 'createdAt' | 'updatedAt'>[] = [
   {

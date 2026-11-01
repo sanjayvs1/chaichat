@@ -1,6 +1,6 @@
 import { useState, useRef, useMemo, memo } from 'react'
 import { ChevronDown, ChevronRight, Clock, MessageSquare, SortAsc, Download, Upload, MoreHorizontal, ChevronLeft, Users, X } from 'lucide-react'
-import type { ChatSession, Character } from '../types/ollama'
+import type { ChatSession, Character } from '../types/chat'
 import { ChatSessionItem } from './ChatSessionItem'
 import { Button } from './ui/button'
 import { CharacterAvatar } from './CharacterAvatar'

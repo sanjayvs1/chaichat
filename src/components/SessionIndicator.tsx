@@ -1,5 +1,5 @@
 import { MessageSquare, Clock, Save } from 'lucide-react'
-import type { ChatSession } from '../types/ollama'
+import type { ChatSession } from '../types/chat'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 

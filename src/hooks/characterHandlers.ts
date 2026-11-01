@@ -1,4 +1,4 @@
-import type { Character, ChatSession, ChatMessage } from "../types/ollama";
+import type { Character, ChatSession, ChatMessage } from "../types/chat";
 import { dbService } from "../services/database";
 
 export interface CharacterHandlerParams {

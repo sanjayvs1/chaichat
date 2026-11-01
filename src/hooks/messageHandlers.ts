@@ -1,14 +1,13 @@
-import type { ChatMessage, Character, AIProvider, ProviderStatus, ChatSession } from "../types/ollama";
-import { OllamaService } from "../services/ollama";
-import { GroqService } from "../services/groq";
-import { LMStudioService } from "../services/lmstudio";
+import type { ChatMessage, Character, AIProvider, ProviderStatus, ChatSession } from "../types/chat";
+import { LLMService } from "../services/llm";
 import { dbService } from "../services/database";
-import type { CharacterMemory } from "../types/ollama";
+import type { CharacterMemory } from "../types/chat";
 import { startTransition as startTransitionSafe } from "react";
 
 export interface MessageHandlerParams {
   selectedModel: string;
   selectedProvider: AIProvider;
+  providerName: string;
   isLoading: boolean;
   currentSessionId: string | null;
   // Read the latest messages at generation time (avoids stale closures during ask-all)
@@ -117,18 +116,6 @@ async function loadMemoriesForTarget(target: Character): Promise<CharacterMemory
   }
 }
 
-function providerStream(provider: AIProvider, model: string, messages: Array<Pick<ChatMessage, "role" | "content">>, signal: AbortSignal): AsyncGenerator<string, void, unknown> {
-  switch (provider) {
-    case "groq":
-      return GroqService.chatStream(model, messages, signal);
-    case "lmstudio":
-      return LMStudioService.chatStream(model, messages, signal);
-    case "ollama":
-    default:
-      return OllamaService.chatStream(model, messages, signal);
-  }
-}
-
 /**
  * Extract durable facts from a recent exchange and store them as memories.
  * Fire-and-forget; failures are logged but never interrupt chatting.
@@ -183,7 +170,7 @@ async function extractMemoriesInBackground(
     ];
 
     let result = "";
-    for await (const chunk of providerStream(provider, model, prompt, new AbortController().signal)) {
+    for await (const chunk of LLMService.chatStream(provider, model, prompt, new AbortController().signal)) {
       result += chunk;
     }
 
@@ -241,13 +228,22 @@ async function extractMemoriesInBackground(
   }
 }
 
+export interface SendMessageOptions {
+  /** Don't add a new user message — regenerate a response from existing history (edit/resend/continue) */
+  skipUserMessage?: boolean;
+  /** Nudge appended to the request so the model continues where it stopped */
+  continueNudge?: string;
+}
+
 export const sendMessageHandler = async (
   content: string,
-  params: MessageHandlerParams
+  params: MessageHandlerParams,
+  options: SendMessageOptions = {}
 ) => {
   const {
     selectedModel,
     selectedProvider,
+    providerName,
     isLoading,
     currentSessionId,
     getMessages,
@@ -261,13 +257,17 @@ export const sendMessageHandler = async (
     abortControllerRef,
   } = params;
 
+  const { skipUserMessage = false, continueNudge } = options;
+
   if (!selectedModel || isLoading || !currentSessionId) return;
+
+  // Regenerating/continuing requires an existing conversation to respond to
+  const existingMessages = getMessages();
+  if (skipUserMessage && !existingMessages.some((m) => m.role === "user")) return;
 
   // Check if the provider is available
   if (!providerStatus[selectedProvider]) {
-    setError(
-      `${selectedProvider === "groq" ? "Groq" : selectedProvider === "lmstudio" ? "LM Studio" : "Ollama"} is not connected. Please check your connection${selectedProvider === "groq" ? " and API key" : ""}.`
-    );
+    setError(`${providerName} is not connected. Check it under Connections.`);
     return;
   }
 
@@ -279,18 +279,29 @@ export const sendMessageHandler = async (
 
   const currentMessages = getMessages();
 
+  // The user message this response responds to (existing when regenerating)
+  const lastUserMessage = [...currentMessages].reverse().find((m) => m.role === "user");
+
   // One broadcast user message when several characters will answer,
   // otherwise address the single target directly.
   const primaryTarget = targets[0];
-  const userMessage: ChatMessage = {
-    id: crypto.randomUUID(),
-    role: "user",
-    content,
-    timestamp: new Date(),
-    targetId: primaryTarget?.id,
-  };
+  const userMessage: ChatMessage = skipUserMessage
+    ? (lastUserMessage ?? {
+        id: crypto.randomUUID(),
+        role: "user",
+        content,
+        timestamp: new Date(),
+      })
+    : {
+        id: crypto.randomUUID(),
+        role: "user",
+        content,
+        timestamp: new Date(),
+        targetId: primaryTarget?.id,
+      };
 
-  // Assistant placeholders for every responding character
+  // Assistant placeholders for every responding character.
+  // When regenerating, replace the trailing assistant placeholder(s) instead of appending.
   const assistantMessages: ChatMessage[] = targets.map(
     (target): ChatMessage => ({
       id: crypto.randomUUID(),
@@ -313,7 +324,15 @@ export const sendMessageHandler = async (
 
   setIsLoading(true);
   setError(null);
-  setMessages((prev) => [...prev, userMessage, ...assistantMessages]);
+  if (skipUserMessage) {
+    // Drop empty assistant placeholders (previous aborted attempts), then append fresh ones
+    setMessages((prev) => [
+      ...prev.filter((m) => !(m.role === "assistant" && m.content === "")),
+      ...assistantMessages,
+    ]);
+  } else {
+    setMessages((prev) => [...prev, userMessage, ...assistantMessages]);
+  }
 
   // Update session title / timestamps
   const nowIso = new Date().toISOString();
@@ -369,6 +388,11 @@ export const sendMessageHandler = async (
           .map(({ role, content }) => ({ role, content })),
       ];
 
+      // Non-persisted nudge so the model continues seamlessly (continue button)
+      if (continueNudge) {
+        messageHistory.push({ role: "user", content: continueNudge });
+      }
+
       let fullResponse = "";
       let lastUpdate = Date.now();
       let updateTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -383,7 +407,7 @@ export const sendMessageHandler = async (
         });
       };
 
-      for await (const chunk of providerStream(selectedProvider, selectedModel, messageHistory, signal)) {
+      for await (const chunk of LLMService.chatStream(selectedProvider, selectedModel, messageHistory, signal)) {
         if (signal.aborted) break;
         fullResponse += chunk;
 

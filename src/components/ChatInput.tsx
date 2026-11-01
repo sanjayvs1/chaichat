@@ -1,17 +1,18 @@
 import { useState, useRef, useEffect, memo } from 'react'
-import { Send, Loader2 } from 'lucide-react'
+import { Send, Loader2, Square } from 'lucide-react'
 import { Button } from './ui/button'
 import { Textarea } from './ui/textarea'
 
 interface ChatInputProps {
   onSendMessage: (message: string) => void
+  onStop?: () => void
   disabled?: boolean
   /** True only while a response is actively streaming */
   generating?: boolean
   placeholder?: string
 }
 
-export const ChatInput = memo(function ChatInput({ onSendMessage, disabled, generating = false, placeholder = "Message..." }: ChatInputProps) {
+export const ChatInput = memo(function ChatInput({ onSendMessage, onStop, disabled, generating = false, placeholder = "Message..." }: ChatInputProps) {
   const [message, setMessage] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -98,20 +99,29 @@ export const ChatInput = memo(function ChatInput({ onSendMessage, disabled, gene
           />
         </div>
         
-        <Button
-          onClick={handleSubmit}
-          disabled={!canSend || isOverLimit}
-          size="icon"
-          className="h-9 w-9 shrink-0 rounded-md"
-          variant={canSend ? "default" : "ghost"}
-          aria-label={generating ? "Generating response" : canSend ? "Send message" : "Enter a message to send"}
-        >
-          {generating ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
+        {generating && onStop ? (
+          <Button
+            onClick={onStop}
+            size="icon"
+            className="h-9 w-9 shrink-0 rounded-md"
+            variant="destructive"
+            aria-label="Stop generating"
+            title="Stop generating"
+          >
+            <Square className="h-3.5 w-3.5" />
+          </Button>
+        ) : (
+          <Button
+            onClick={handleSubmit}
+            disabled={!canSend || isOverLimit}
+            size="icon"
+            className="h-9 w-9 shrink-0 rounded-md"
+            variant={canSend ? "default" : "ghost"}
+            aria-label={canSend ? "Send message" : "Enter a message to send"}
+          >
             <Send className="h-4 w-4" />
-          )}
-        </Button>
+          </Button>
+        )}
       </div>
       
       {/* Accessible help text and character count */}

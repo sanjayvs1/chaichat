@@ -1,6 +1,6 @@
 import { useState, memo } from 'react'
 import { Edit3, Trash2, Copy, Download, MessageSquare } from 'lucide-react'
-import type { ChatSession, Character } from '../types/ollama'
+import type { ChatSession, Character } from '../types/chat'
 import { 
   DropdownMenu,
   DropdownMenuContent,

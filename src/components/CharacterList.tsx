@@ -6,7 +6,7 @@ import { CharacterCard } from './CharacterCard'
 import { CharacterEditor } from './CharacterEditor'
 import { Plus, Search, Users, AlertCircle, SortAsc } from 'lucide-react'
 import { Alert, AlertDescription } from './ui/alert'
-import type { Character } from '../types/ollama'
+import type { Character } from '../types/chat'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 
 interface CharacterListProps {

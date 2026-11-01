@@ -1,5 +1,5 @@
 import { VisuallyHidden } from '@radix-ui/react-visually-hidden'
-import { AlertCircle, Bot, Code2, Github, Menu, Moon, Plus, RefreshCw, Search, Settings, Square, Sun, Users, Wifi, WifiOff, X, Key, Monitor, MessagesSquare } from 'lucide-react'
+import { AlertCircle, Bot, Code2, Github, Menu, Moon, Play, Plus, RefreshCw, Search, Settings, Square, Sun, Users, Wifi, WifiOff, X, Plug, MessagesSquare } from 'lucide-react'
 import { useEffect, useRef, useState, useMemo, useDeferredValue, useCallback } from 'react'
 import { CharacterList } from '../components/CharacterList'
 import { ChatInput } from '../components/ChatInput'
@@ -8,7 +8,7 @@ import { ChatSearch } from '../components/ChatSearch'
 import { ChatSessionList } from '../components/ChatSessionList'
 import { ModelSelector } from '../components/ModelSelector'
 import { ProviderSelector } from '../components/ProviderSelector'
-import { ApiKeyManager } from '../components/ApiKeyManager'
+import { ConnectionManager } from '../components/ConnectionManager'
 import { ParticipantsBar } from '../components/ParticipantsBar'
 import { SavedScripts } from '../components/SavedScripts'
 import { SystemPromptEditor } from '../components/SystemPromptEditor'
@@ -20,7 +20,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../compon
 import { Sidebar, SidebarContent, SidebarHeader, SidebarItem } from '../components/ui/sidebar'
 import { useChat } from '../hooks/useChat'
 import { dbService } from '../services/database'
-import type { SavedScript } from '../types/ollama'
+import type { SavedScript } from '../types/chat'
 
 export default Index
 
@@ -38,12 +38,24 @@ function Index() {
     error,
 
     providerStatus,
+    connections,
+    presets,
+    encryptionAvailable,
+    connectionError,
+    connectionNotice,
+    dismissConnectionNotice,
+    refreshConnections,
+    autoConnect,
+    setAutoConnect,
     sendMessage,
+    continueResponse,
+    editUserMessage,
+    resendFromMessage,
+    branchFromMessage,
     clearChat,
     loadSession,
     stopGeneration,
-    loadModels,
-    checkConnections,
+    reconnect,
     systemPrompt,
     setSystemPrompt,
     searchChats,
@@ -75,7 +87,7 @@ function Index() {
   const [showPromptEditor, setShowPromptEditor] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
   const [showCharacters, setShowCharacters] = useState(false)
-  const [showApiKeys, setShowApiKeys] = useState(false)
+  const [showConnections, setShowConnections] = useState(false)
   const [showSavedScripts, setShowSavedScripts] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -364,7 +376,7 @@ function Index() {
         if (showPromptEditor) setShowPromptEditor(false)
         else if (showSearch) setShowSearch(false)
         else if (showCharacters) setShowCharacters(false)
-        else if (showApiKeys) setShowApiKeys(false)
+        else if (showConnections) setShowConnections(false)
         else if (showSavedScripts) setShowSavedScripts(false)
         else if (sidebarOpen) setSidebarOpen(false)
       }
@@ -372,7 +384,7 @@ function Index() {
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [showPromptEditor, showSearch, showCharacters, showApiKeys, showSavedScripts, sidebarOpen, clearChat])
+  }, [showPromptEditor, showSearch, showCharacters, showConnections, showSavedScripts, sidebarOpen, clearChat])
 
   // Stable onSendMessage to avoid re-rendering ChatInput during streaming
   const sendMessageRef = useRef(sendMessage)
@@ -380,6 +392,30 @@ function Index() {
   const handleSendMessage = useCallback((text: string) => {
     sendMessageRef.current(text)
   }, [])
+
+  // Stable per-message handlers for ChatMessage (memoized component)
+  const editUserMessageRef = useRef(editUserMessage)
+  useEffect(() => { editUserMessageRef.current = editUserMessage }, [editUserMessage])
+  const resendFromMessageRef = useRef(resendFromMessage)
+  useEffect(() => { resendFromMessageRef.current = resendFromMessage }, [resendFromMessage])
+  const branchFromMessageRef = useRef(branchFromMessage)
+  useEffect(() => { branchFromMessageRef.current = branchFromMessage }, [branchFromMessage])
+  const handleMessageEdit = useCallback((messageId: string, newContent: string, resend: boolean) => {
+    editUserMessageRef.current(messageId, newContent, resend)
+  }, [])
+  const handleMessageResend = useCallback((messageId: string) => {
+    resendFromMessageRef.current(messageId)
+  }, [])
+  const handleMessageBranch = useCallback((messageId: string) => {
+    branchFromMessageRef.current(messageId)
+  }, [])
+
+  // Continue button: only when idle and the last message is from the assistant
+  const canContinue = useMemo(() => {
+    if (isLoading || messages.length === 0) return false
+    const last = messages[messages.length - 1]
+    return last.role === 'assistant' && last.content.trim().length > 0
+  }, [isLoading, messages])
 
   const handleSaveScript = useCallback((code: string, language: string) => {
     const now = new Date().toISOString()
@@ -399,6 +435,9 @@ function Index() {
     }
     dbService.createSavedScript(script).catch(err => console.error('Failed to save script:', err))
   }, [getCurrentSessionId])
+
+  const selectedConnection = connections.find(c => c.id === selectedProvider)
+  const isConnected = !!providerStatus[selectedProvider]
 
   // Memoize current session id string to avoid recomputing during renders
   const currentSessionId = useMemo(() => getCurrentSessionId(), [getCurrentSessionId])
@@ -468,9 +507,9 @@ function Index() {
                   Characters
                 </SidebarItem>
                 
-                <SidebarItem onClick={() => setShowApiKeys(true)}>
-                  <Key className="h-4 w-4" />
-                  API Keys
+                <SidebarItem onClick={() => setShowConnections(true)}>
+                  <Plug className="h-4 w-4" />
+                  Connections
                 </SidebarItem>
 
                 <SidebarItem onClick={() => setShowSavedScripts(true)}>
@@ -525,11 +564,13 @@ function Index() {
               
               <div className="hidden sm:flex items-center gap-2.5">
                 <ProviderSelector
+                  connections={connections}
                   selectedProvider={selectedProvider}
                   onProviderChange={handleProviderChange}
+                  onManage={() => setShowConnections(true)}
                   disabled={isLoading}
                 />
-                
+
                 <ModelSelector
                   models={models.filter(m => m.provider === selectedProvider)}
                   selectedModel={selectedModel}
@@ -543,52 +584,25 @@ function Index() {
           <div className="flex items-center gap-1">
             {/* Connection status with better accessibility */}
             <div className="flex items-center gap-2 mr-2">
-              {selectedProvider === 'ollama' && (
-                providerStatus.ollama ? (
-                  <div className="flex items-center gap-1">
+              {selectedConnection && (
+                <div
+                  className="flex items-center gap-1"
+                  title={isConnected ? `Connected to ${selectedConnection.name}` : connectionError ?? 'Not connected'}
+                >
+                  {isConnected ? (
                     <Wifi className="h-4 w-4 text-emerald-600" />
-                    <span className="sr-only">Connected to Ollama</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1">
+                  ) : (
                     <WifiOff className="h-4 w-4 text-destructive" />
-                    <span className="sr-only">Disconnected from Ollama</span>
-                  </div>
-                )
-              )}
-              {selectedProvider === 'lmstudio' && (
-                providerStatus.lmstudio ? (
-                  <div className="flex items-center gap-1">
-                    <Monitor className="h-4 w-4 text-emerald-600" />
-                    <span className="sr-only">Connected to LM Studio</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1">
-                    <WifiOff className="h-4 w-4 text-destructive" />
-                    <span className="sr-only">Disconnected from LM Studio</span>
-                  </div>
-                )
-              )}
-              {selectedProvider === 'groq' && (
-                providerStatus.groq ? (
-                  <div className="flex items-center gap-1">
-                    <Wifi className="h-4 w-4 text-purple-600" />
-                    <span className="sr-only">Connected to Groq</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1">
-                    <WifiOff className="h-4 w-4 text-destructive" />
-                    <span className="sr-only">Disconnected from Groq</span>
-                  </div>
-                )
+                  )}
+                  <span className="sr-only">
+                    {isConnected ? 'Connected to' : 'Disconnected from'} {selectedConnection.name}
+                  </span>
+                </div>
               )}
             </div>
             
             <Button
-              onClick={() => {
-                loadModels()
-                checkConnections()
-              }}
+              onClick={reconnect}
               disabled={isModelsLoading}
               variant="ghost"
               size="sm"
@@ -642,8 +656,10 @@ function Index() {
         {/* Mobile Provider/Model Selectors */}
         <div className="sm:hidden flex flex-col gap-2 p-3 border-b bg-muted/20">
           <ProviderSelector
+            connections={connections}
             selectedProvider={selectedProvider}
             onProviderChange={handleProviderChange}
+            onManage={() => setShowConnections(true)}
             disabled={isLoading}
           />
           <ModelSelector
@@ -674,6 +690,19 @@ function Index() {
               <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => setShowSearch(false)}>
                 <X className="h-4 w-4" />
                 <span className="sr-only">Close search</span>
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Auto-connect notice */}
+        {connectionNotice && (
+          <div className="border-b bg-muted/30 px-3 py-2 flex-shrink-0">
+            <div className="max-w-4xl mx-auto flex items-center justify-between gap-4 text-sm text-muted-foreground">
+              <span>{connectionNotice}</span>
+              <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={dismissConnectionNotice}>
+                <X className="h-3.5 w-3.5" />
+                <span className="sr-only">Dismiss</span>
               </Button>
             </div>
           </div>
@@ -735,12 +764,12 @@ function Index() {
                 )}
                 <div className="space-y-3">
                   <h1 className="text-2xl font-semibold">
-                    {!providerStatus[selectedProvider]
-                      ? selectedProvider === 'groq'
-                        ? 'Connect to Groq'
-                        : selectedProvider === 'lmstudio'
-                          ? 'Connect to LM Studio'
-                          : 'Connect to Ollama'
+                    {!isConnected
+                      ? isModelsLoading
+                        ? 'Connecting...'
+                        : selectedConnection
+                          ? `Connect to ${selectedConnection.name}`
+                          : 'Add a connection'
                       : activeTarget
                         ? `Chat with ${activeTarget.name}`
                         : selectedModel
@@ -749,12 +778,12 @@ function Index() {
                     }
                   </h1>
                   <p className="text-muted-foreground text-base leading-relaxed">
-                    {!providerStatus[selectedProvider]
-                      ? selectedProvider === 'groq'
-                        ? 'Set your Groq API key in settings to start chatting'
-                        : selectedProvider === 'lmstudio'
-                          ? 'Start the LM Studio server (Developer → Start Server, port 1234)'
-                          : 'Make sure Ollama is running on 127.0.0.1:11434'
+                    {!isConnected
+                      ? isModelsLoading
+                        ? 'Picking up where you left off'
+                        : selectedConnection
+                          ? connectionError ?? 'Press refresh to connect, or check the connection settings'
+                          : 'Link a local LLM server or a cloud provider to start chatting'
                       : participants.length > 1
                         ? `${participants.map((p) => p.name).join(', ')} are in this chat. Pick who to talk to below — each keeps their own memory.`
                         : activeTarget
@@ -765,7 +794,13 @@ function Index() {
                     }
                   </p>
                 </div>
-                {selectedModel && providerStatus[selectedProvider] && (
+                {!isConnected && !isModelsLoading && (
+                  <Button variant="outline" onClick={() => setShowConnections(true)}>
+                    <Plug className="h-4 w-4" />
+                    Manage connections
+                  </Button>
+                )}
+                {selectedModel && isConnected && (
                   <div className="space-y-4">
                     <p className="text-sm text-muted-foreground font-medium">Try these examples:</p>
                      <div className="flex flex-wrap gap-2 justify-center max-w-md">
@@ -805,7 +840,7 @@ function Index() {
                 className="px-4 py-2"
               /> */}
               
-              <div className={`w-full transition-opacity duration-200 ${isLoadingSession ? 'opacity-50' : 'opacity-100'}`}>
+              <div className={`w-full max-w-4xl mx-auto px-2 transition-opacity duration-200 ${isLoadingSession ? 'opacity-50' : 'opacity-100'}`}>
                 {/* Load more messages button */}
                 {messages.length > visibleMessageCount && (
                   <div className="text-center mb-4">
@@ -840,11 +875,14 @@ function Index() {
                         if (isLastUser) lastUserMessageRef.current = el
                       }}
                     >
-                      <ChatMessage 
-                        message={message} 
+                      <ChatMessage
+                        message={message}
                         characters={characters}
                         isStreaming={isLoading && message.role === 'assistant' && isLast}
                         onSaveScript={handleSaveScript}
+                        onEditMessage={handleMessageEdit}
+                        onResendMessage={handleMessageResend}
+                        onBranchFromMessage={handleMessageBranch}
                       />
                     </div>
                   )
@@ -867,31 +905,45 @@ function Index() {
                 onAddParticipant={() => setShowCharacters(true)}
                 disabled={isLoading}
               />
-              {participants.length > 1 && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 shrink-0 gap-1.5 text-xs"
-                  disabled={isLoading || !selectedModel || !providerStatus[selectedProvider]}
-                  onClick={() => sendMessage('Hello everyone!', { askAll: true })}
-                  title="Send to every character in this chat — each answers from their own context"
-                >
-                  <MessagesSquare className="h-3.5 w-3.5" />
-                  Ask all
-                </Button>
-              )}
+              <div className="flex items-center gap-2 shrink-0">
+                {canContinue && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1.5 text-xs"
+                    disabled={!selectedModel || !isConnected}
+                    onClick={continueResponse}
+                    title="Let the AI continue its last response"
+                  >
+                    <Play className="h-3 w-3" />
+                    Continue
+                  </Button>
+                )}
+                {participants.length > 1 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1.5 text-xs"
+                    disabled={isLoading || !selectedModel || !isConnected}
+                    onClick={() => sendMessage('Hello everyone!', { askAll: true })}
+                    title="Send to every character in this chat — each answers from their own context"
+                  >
+                    <MessagesSquare className="h-3.5 w-3.5" />
+                    Ask all
+                  </Button>
+                )}
+              </div>
             </div>
             <ChatInput
               onSendMessage={handleSendMessage}
-              disabled={isLoading || !selectedModel || !providerStatus[selectedProvider]}
+              onStop={stopGeneration}
+              disabled={isLoading || !selectedModel || !isConnected}
               generating={isLoading}
               placeholder={
-                !providerStatus[selectedProvider]
-                  ? selectedProvider === 'groq'
-                    ? 'Groq API key required...'
-                    : selectedProvider === 'lmstudio'
-                      ? 'LM Studio server not connected...'
-                      : 'Ollama is not connected...'
+                !isConnected
+                  ? selectedConnection
+                    ? `${selectedConnection.name} is not connected...`
+                    : 'Add a connection to start chatting...'
                   : !selectedModel
                     ? 'Select a model first...'
                     : activeTarget
@@ -928,28 +980,25 @@ function Index() {
         </DialogContent>
       </Dialog>
 
-      {/* API Key Management Dialog */}
-      <Dialog open={showApiKeys} onOpenChange={setShowApiKeys}>
-        <DialogContent className="max-w-md">
+      {/* Connection Management Dialog */}
+      <Dialog open={showConnections} onOpenChange={setShowConnections}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogTitle asChild>
-            <VisuallyHidden>API Key Management</VisuallyHidden>
+            <VisuallyHidden>Connections</VisuallyHidden>
           </DialogTitle>
           <DialogDescription asChild>
-            <VisuallyHidden>Manage API keys for AI providers.</VisuallyHidden>
+            <VisuallyHidden>Add, update, or remove LLM connections and their API keys.</VisuallyHidden>
           </DialogDescription>
-          <div className="space-y-6">
-            <div className="flex items-center gap-2">
-              <Key className="h-5 w-5" />
-              <h2 className="text-lg font-semibold">API Keys</h2>
-            </div>
-            
-            <ApiKeyManager 
-              onApiKeySet={() => {
-                checkConnections()
-                loadModels()
-              }}
-            />
-          </div>
+          <ConnectionManager
+            connections={connections}
+            presets={presets}
+            selectedProvider={selectedProvider}
+            providerStatus={providerStatus}
+            encryptionAvailable={encryptionAvailable}
+            autoConnect={autoConnect}
+            onAutoConnectChange={setAutoConnect}
+            onChanged={refreshConnections}
+          />
         </DialogContent>
       </Dialog>
 

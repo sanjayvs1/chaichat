@@ -1,6 +1,5 @@
-import type { ChatSession, ChatMessage, Character, AIProvider } from "../types/ollama";
+import type { ChatSession, ChatMessage, Character, AIProvider } from "../types/chat";
 import { dbService } from "../services/database";
-import { GroqService } from "../services/groq";
 
 export interface SessionHandlerParams {
   sessions: ChatSession[];
@@ -76,7 +75,7 @@ export const createNewSession = async (
     messages: [],
     characterId: ids[0],
     participantIds: ids.length > 0 ? ids : undefined,
-    provider: params.selectedProvider || 'ollama',
+    provider: params.selectedProvider || undefined,
     selectedModel: params.selectedModel || '',
   };
   await dbService.createSession(newSession);
@@ -97,9 +96,6 @@ export const clearChatHandler = async (params: SessionHandlerParams, participant
   // Clear chat summary to prevent context bleeding into new conversations
   setChatSummary("");
   
-  // Reset Groq client to ensure clean state
-  GroqService.resetClient();
-
   // Carry the current cast of characters into the fresh chat by default
   const previousSession = sessions.find((s) => s.id === currentSessionId);
   const carriedParticipants =
@@ -127,6 +123,7 @@ export const loadSessionHandler = async (
   sessionId: string,
   params: SessionHandlerParams & {
     setActiveTargetId?: React.Dispatch<React.SetStateAction<string | null>>;
+    connectionExists: (id: AIProvider) => boolean;
   },
   characters: Character[],
   setSelectedProvider: React.Dispatch<React.SetStateAction<AIProvider>>,
@@ -146,10 +143,7 @@ export const loadSessionHandler = async (
   
   // Clear chat summary when switching sessions to prevent context bleeding
   setChatSummary("");
-  
-  // Reset Groq client to prevent any potential context bleeding
-  GroqService.resetClient();
-  
+
   // First check if session is already in memory (sessions array)
   let session = sessions.find((s) => s.id === sessionId);
   
@@ -173,11 +167,12 @@ export const loadSessionHandler = async (
       setCurrentSessionId(sessionId);
       
       // Restore provider and model (high priority)
-      if (session.provider) {
+      // A session can outlive its connection, so keep the current one in that case
+      if (session.provider && params.connectionExists(session.provider)) {
         setSelectedProvider(session.provider);
-      }
-      if (session.selectedModel) {
-        setSelectedModel(session.selectedModel);
+        if (session.selectedModel) {
+          setSelectedModel(session.selectedModel);
+        }
       }
       
       // Update messages and character together

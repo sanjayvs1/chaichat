@@ -1,7 +1,7 @@
 import { X, Plus, Users } from 'lucide-react'
 import { CharacterAvatar } from './CharacterAvatar'
 import { cn } from '@/lib/utils'
-import type { Character } from '../types/ollama'
+import type { Character } from '../types/chat'
 
 interface ParticipantsBarProps {
   participants: Character[]

@@ -1,4 +1,4 @@
-import type { ChatSession, ChatMessage, Character, CharacterMemory, SavedScript, ScriptExecutionResult } from '../types/ollama'
+import type { ChatSession, ChatMessage, Character, CharacterMemory, SavedScript, ScriptExecutionResult } from '../types/chat'
 
 // Helper to ensure we're running inside Electron renderer
 const getElectronDB = () => {
@@ -43,6 +43,10 @@ export class DatabaseService {
 
   async updateMessage(messageId: string, updates: Partial<ChatMessage>): Promise<boolean> {
     return this.api.updateMessage(messageId, updates)
+  }
+
+  async deleteMessages(messageIds: string[]): Promise<number> {
+    return this.api.deleteMessages(messageIds)
   }
 
   async searchMessages(query: string): Promise<Array<{ sessionId: string; message: ChatMessage; sessionTitle: string }>> {

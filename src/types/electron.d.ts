@@ -1,4 +1,19 @@
-import { ChatMessage, ChatSession, Character, CharacterMemory, SavedScript, ScriptExecutionResult } from './ollama'
+import {
+  AIProvider,
+  AIModel,
+  ChatMessage,
+  ChatSession,
+  Character,
+  CharacterMemory,
+  ConnectionInput,
+  LLMChatEvent,
+  LLMConnection,
+  LLMResult,
+  LLMState,
+  LegacyLLMSettings,
+  SavedScript,
+  ScriptExecutionResult,
+} from './chat'
 
 export interface ElectronAPI {
   db: {
@@ -11,6 +26,7 @@ export interface ElectronAPI {
     
     addMessages: (sessionId: string, messages: ChatMessage[]) => Promise<void>
   updateMessage: (messageId: string, updates: Partial<ChatMessage>) => Promise<boolean>
+    deleteMessages: (messageIds: string[]) => Promise<number>
     searchMessages: (query: string) => Promise<SearchResult[]>
     
     getSetting: (key: string) => Promise<string | null>
@@ -43,6 +59,23 @@ export interface ElectronAPI {
     deleteSavedScript: (scriptId: string) => Promise<boolean>
   }
   
+  llm: {
+    init: (legacy: LegacyLLMSettings) => Promise<LLMState>
+    listConnections: () => Promise<LLMConnection[]>
+    saveConnection: (input: ConnectionInput) => Promise<LLMResult<{ connection: LLMConnection; keyCleared: boolean }>>
+    deleteConnection: (id: AIProvider) => Promise<boolean>
+    forgetAllKeys: () => Promise<void>
+    testConnection: (draft: ConnectionInput) => Promise<LLMResult<{ modelCount: number }>>
+    detectLocalServers: () => Promise<Array<{ baseUrl: string; modelCount: number }>>
+    listModels: (id: AIProvider) => Promise<LLMResult<{ models: Array<Omit<AIModel, 'provider'>> }>>
+    startChat: (
+      requestId: string,
+      request: { connectionId: AIProvider; model: string; messages: Array<Pick<ChatMessage, 'role' | 'content'>> }
+    ) => Promise<void>
+    abortChat: (requestId: string) => Promise<void>
+    onChatEvent: (requestId: string, callback: (event: LLMChatEvent) => void) => () => void
+  }
+
   showSaveDialog: (options: Electron.SaveDialogOptions) => Promise<Electron.SaveDialogReturnValue>
   showOpenDialog: (options: Electron.OpenDialogOptions) => Promise<Electron.OpenDialogReturnValue>
   writeFile: (filePath: string, data: string) => Promise<boolean>

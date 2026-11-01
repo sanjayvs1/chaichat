@@ -5,7 +5,7 @@ import { Badge } from './ui/badge'
 import { CharacterAvatar } from './CharacterAvatar'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 import { MoreHorizontal, Edit, Trash2, MessageCircle, Copy, Brain } from 'lucide-react'
-import type { Character } from '../types/ollama'
+import type { Character } from '../types/chat'
 
 interface CharacterCardProps {
   character: Character

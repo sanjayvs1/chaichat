@@ -1,4 +1,4 @@
-import type { AIModel } from '../types/ollama'
+import type { AIModel } from '../types/chat'
 import {
   Select,
   SelectContent,
@@ -12,12 +12,6 @@ interface ModelSelectorProps {
   selectedModel: string
   onModelChange: (model: string) => void
   loading?: boolean
-}
-
-const PROVIDER_LABELS: Record<string, string> = {
-  ollama: 'Ollama',
-  groq: 'Groq',
-  lmstudio: 'LM Studio'
 }
 
 export function ModelSelector({ models, selectedModel, onModelChange, loading }: ModelSelectorProps) {
@@ -47,12 +41,7 @@ export function ModelSelector({ models, selectedModel, onModelChange, loading }:
       <SelectContent>
         {models.map((model) => (
           <SelectItem key={`${model.provider}-${model.name}`} value={model.name} className="text-sm">
-            <div className="flex items-center justify-between gap-3 w-full">
-              <span className="truncate">{model.name}</span>
-              <span className="ml-auto shrink-0 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                {PROVIDER_LABELS[model.provider] || model.provider}
-              </span>
-            </div>
+            <span className="truncate">{model.name}</span>
           </SelectItem>
         ))}
       </SelectContent>

@@ -1,62 +1,70 @@
-export type AIProvider = 'ollama' | 'groq' | 'lmstudio'
+// Id of a saved connection
+export type AIProvider = string
 
-export interface BaseModel {
+export interface AIModel {
   name: string
   provider: AIProvider
+  contextWindow?: number
 }
 
-export interface OllamaModel extends BaseModel {
-  provider: 'ollama'
-  model: string
-  modified_at: string
-  size: number
-  digest: string
-  details: {
-    parent_model: string
-    format: string
-    family: string
-    families: string[]
-    parameter_size: string
-    quantization_level: string
-  }
-}
+export type ProviderStatus = Record<AIProvider, boolean>
 
-export interface GroqModel extends BaseModel {
-  provider: 'groq'
+export type ConnectionScope = 'device' | 'network' | 'cloud'
+export type ConnectionKeyState = 'none' | 'saved' | 'session' | 'unreadable'
+
+export interface ConnectionPreset {
   id: string
-  object: string
-  created: number
-  owned_by: string
-  active: boolean
-  context_window: number
+  name: string
+  description?: string
+  baseUrl: string
+  needsKey: boolean
+  editableUrl?: boolean
+  keyUrl?: string
 }
 
-export interface OpenAICompatibleModel extends BaseModel {
-  provider: 'lmstudio'
-  id: string
-  object?: string
-  owned_by?: string
+// A saved connection as the UI sees it. API keys stay in the main process.
+export interface LLMConnection {
+  id: AIProvider
+  presetId: string
+  name: string
+  baseUrl: string
+  defaultModel: string
+  lastUsedAt: string | null
+  scope: ConnectionScope
+  keyState: ConnectionKeyState
+  keyHint: string
 }
 
-export type AIModel = OllamaModel | GroqModel | OpenAICompatibleModel
-
-export interface OllamaModelsResponse {
-  models: OllamaModel[]
+export interface ConnectionInput {
+  id?: AIProvider
+  presetId: string
+  name: string
+  baseUrl: string
+  defaultModel?: string
+  apiKey?: string
+  clearKey?: boolean
+  rememberKey?: boolean
 }
 
-export interface OpenAIModelsResponse {
-  data: Array<{
-    id: string
-    object: string
-    owned_by?: string
-  }>
+export interface LLMState {
+  presets: ConnectionPreset[]
+  connections: LLMConnection[]
+  encryptionAvailable: boolean
 }
 
-export interface ProviderStatus {
-  ollama: boolean
-  groq: boolean
-  lmstudio: boolean
+export interface LegacyLLMSettings {
+  localUrl?: string
+  secondaryLocalUrl?: string
+  cloudKey?: string
 }
+
+export type LLMResult<T> = ({ ok: true } & T) | { ok: false; error: string }
+
+export type LLMChatEvent =
+  | { requestId: string; type: 'delta'; text: string }
+  | { requestId: string; type: 'done' }
+  | { requestId: string; type: 'aborted' }
+  | { requestId: string; type: 'error'; message: string }
 
 export interface ChatMessage {
   id: string
@@ -65,54 +73,6 @@ export interface ChatMessage {
   timestamp: Date
   characterId?: string // Author character for assistant messages
   targetId?: string // Character a user message is addressed to (multi-character chats)
-}
-
-export interface OllamaChatRequest {
-  model: string
-  messages: Array<{
-    role: 'user' | 'assistant' | 'system'
-    content: string
-  }>
-  stream?: boolean
-  options?: {
-    num_ctx?: number
-    temperature?: number
-    top_p?: number
-    top_k?: number
-    repeat_penalty?: number
-    num_predict?: number
-    tfs_z?: number
-    typical_p?: number
-    mirostat?: number
-    mirostat_tau?: number
-    mirostat_eta?: number
-  }
-}
-
-export interface OllamaChatResponse {
-  model: string
-  created_at: string
-  message: {
-    role: 'assistant'
-    content: string
-  }
-  done: boolean
-  total_duration?: number
-  load_duration?: number
-  prompt_eval_count?: number
-  prompt_eval_duration?: number
-  eval_count?: number
-  eval_duration?: number
-}
-
-export interface OllamaStreamResponse {
-  model: string
-  created_at: string
-  message: {
-    role: 'assistant'
-    content: string
-  }
-  done: boolean
 }
 
 // Represents a stored past conversation

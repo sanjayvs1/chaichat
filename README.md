@@ -3,9 +3,9 @@
 [![Latest release](https://img.shields.io/github/v/release/sanjayvs1/ChaiChat?sort=semver)](https://github.com/sanjayvs1/ChaiChat/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/sanjayvs1/ChaiChat/total)](https://github.com/sanjayvs1/ChaiChat/releases)
 
-Simple Chat client for Ollama and Groq API.
+Simple chat client for local LLM servers and cloud LLM APIs.
 
-Start Ollama server or configure your Groq API key to chat with AI models in this app.
+Add a connection in the app to chat with AI models. Anything that speaks the OpenAI chat format works, and API keys are encrypted with your OS account.
 
 Built with Electron, Vite, React and SQLite.
 

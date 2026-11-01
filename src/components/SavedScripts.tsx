@@ -3,7 +3,7 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { ScrollArea } from './ui/scroll-area'
 import { Play, Trash2, Search, Code2, Clock, Pencil, Check, X, Loader2 } from 'lucide-react'
-import type { SavedScript, ScriptExecutionResult } from '../types/ollama'
+import type { SavedScript, ScriptExecutionResult } from '../types/chat'
 import { dbService } from '../services/database'
 import { cn } from '@/lib/utils'
 

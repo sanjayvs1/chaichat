@@ -8,7 +8,7 @@ import { Save, X, Wand2, Brain, Trash2, Plus, Smile, Link2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { dbService } from '../services/database'
 
-import type { Character, CharacterMemory } from '../types/ollama'
+import type { Character, CharacterMemory } from '../types/chat'
 import { CharacterAvatar } from './CharacterAvatar'
 import { isEmoji } from '@/lib/character'
 

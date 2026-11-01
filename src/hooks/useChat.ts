@@ -5,9 +5,12 @@ import type {
   Character,
   AIProvider,
   AIModel,
+  ConnectionPreset,
+  LLMConnection,
   ProviderStatus,
-} from "../types/ollama";
+} from "../types/chat";
 import { dbService } from "../services/database";
+import { LLMService } from "../services/llm";
 
 // Import handler modules
 import {
@@ -38,10 +41,9 @@ import {
 } from "./characterHandlers";
 
 import {
-  checkConnectionsHandler,
-  loadModelsHandler,
-  handleModelChangeHandler,
-  handleProviderChangeHandler,
+  connectHandler,
+  pickStartupConnection,
+  type LastUsedModels,
 } from "./modelHandlers";
 
 import {
@@ -55,15 +57,19 @@ export function useChat() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [models, setModels] = useState<AIModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
-  const [selectedProvider, setSelectedProvider] = useState<AIProvider>('ollama');
+  const [selectedProvider, setSelectedProvider] = useState<AIProvider>('');
   const [isLoading, setIsLoading] = useState(false);
   const [isModelsLoading, setIsModelsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [providerStatus, setProviderStatus] = useState<ProviderStatus>({
-    ollama: false,
-    groq: false,
-    lmstudio: false
-  });
+  const [providerStatus, setProviderStatus] = useState<ProviderStatus>({});
+  const [connections, setConnections] = useState<LLMConnection[]>([]);
+  const [presets, setPresets] = useState<ConnectionPreset[]>([]);
+  const [encryptionAvailable, setEncryptionAvailable] = useState(true);
+  const [autoConnect, setAutoConnectState] = useState(true);
+  // Why the selected connection isn't working
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  // Tells the user auto-connect picked something other than their last connection
+  const [connectionNotice, setConnectionNotice] = useState<string | null>(null);
   // Extra global instructions prepended to every request
   const [systemPrompt, setSystemPrompt] = useState<string>("");
   // Characters
@@ -72,7 +78,6 @@ export function useChat() {
   const [charactersError, setCharactersError] = useState<string | null>(null);
   // The character currently being spoken to (null = plain assistant mode)
   const [activeTargetId, setActiveTargetId] = useState<string | null>(null);
-  const [isOllamaConnected, setIsOllamaConnected] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [chatSummary, setChatSummary] = useState<string>("");
@@ -83,7 +88,19 @@ export function useChat() {
   const [isLoadingSession, setIsLoadingSession] = useState(false);
 
   // Track last used model per provider
-  const [lastUsedModels, setLastUsedModels] = useState<{ollama?: string, groq?: string, lmstudio?: string}>({});
+  const [lastUsedModels, setLastUsedModels] = useState<LastUsedModels>({});
+
+  // Latest values for async connection work
+  const connectAttemptRef = useRef(0);
+  const isStartupRef = useRef(true);
+  const connectionsRef = useRef(connections);
+  connectionsRef.current = connections;
+  const selectedProviderRef = useRef(selectedProvider);
+  selectedProviderRef.current = selectedProvider;
+  const selectedModelRef = useRef(selectedModel);
+  selectedModelRef.current = selectedModel;
+  const lastUsedModelsRef = useRef(lastUsedModels);
+  lastUsedModelsRef.current = lastUsedModels;
 
   // Always-fresh messages for async handlers (avoids stale closures during ask-all)
   const messagesRef = useRef<ChatMessage[]>([]);
@@ -131,6 +148,11 @@ export function useChat() {
     const loadData = async () => {
       try {
         isSwitchingSessionRef.current = true;
+        const llmState = await LLMService.init();
+        setPresets(llmState.presets);
+        setConnections(llmState.connections);
+        setEncryptionAvailable(llmState.encryptionAvailable);
+
         const dbSessions = await dbService.getAllSessions();
         setSessions(dbSessions);
 
@@ -143,10 +165,7 @@ export function useChat() {
           setCurrentSessionId(firstSession.id);
           setMessages(firstSession.messages);
 
-          // Restore provider and model from the first session
-          if (firstSession.provider) {
-            setSelectedProvider(firstSession.provider);
-          }
+          // Restore the model from the first session
           if (firstSession.selectedModel) {
             setSelectedModel(firstSession.selectedModel);
           }
@@ -174,8 +193,6 @@ export function useChat() {
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             messages: [],
-            provider: selectedProvider,
-            selectedModel: selectedModel,
           };
           await dbService.createSession(newSession);
           setSessions([newSession]);
@@ -188,6 +205,18 @@ export function useChat() {
         if (dbSystemPrompt) {
           setSystemPrompt(dbSystemPrompt);
         }
+
+        // Restore the last used connection (takes precedence over the session's saved one)
+        const savedProvider = await dbService.getSetting("lastActiveProvider");
+        const startupConnection = pickStartupConnection(
+          llmState.connections,
+          savedProvider,
+          dbSessions[0]?.provider
+        );
+        setSelectedProvider(startupConnection?.id ?? '');
+
+        const savedAutoConnect = await dbService.getSetting("autoConnect");
+        setAutoConnectState(savedAutoConnect !== "false");
 
         // Load last used models per provider
         const dbLastUsedModels = await dbService.getSetting("lastUsedModels");
@@ -308,71 +337,141 @@ export function useChat() {
     }
   }, [lastUsedModels, isInitialized]);
 
-  // Load models on component mount, but only after initialization is complete
-  useEffect(() => {
-    if (isInitialized) {
-      loadModels();
-      checkConnections();
-    }
-  }, [isInitialized]);
-
   // Model and provider handlers
-  const checkConnections = useCallback(async () => {
-    await checkConnectionsHandler(setIsOllamaConnected, setProviderStatus);
+  const connectTo = useCallback((id: AIProvider, options?: { fallback?: boolean }) => {
+    return connectHandler(
+      id,
+      {
+        connectAttemptRef,
+        selectedModelRef,
+        lastUsedModelsRef,
+        connectionsRef,
+        setModels,
+        setSelectedModel,
+        setSelectedProvider,
+        setIsModelsLoading,
+        setProviderStatus,
+        setConnectionError,
+        setConnectionNotice,
+      },
+      options
+    );
   }, []);
 
-  const loadModels = useCallback(async () => {
-    await loadModelsHandler({
-      setModels,
-      setSelectedModel,
-      setSelectedProvider,
-      setIsModelsLoading,
-      setError,
-      setProviderStatus,
-      setIsOllamaConnected,
-      setLastUsedModels,
-      selectedModel,
-      selectedProvider,
-      lastUsedModels,
-      isInitialized
+  // Only real choices are remembered: picking something, or chatting with it.
+  // Auto-connect falling back or opening an old session doesn't change the preference.
+  const rememberSelection = useCallback((provider: AIProvider, model?: string) => {
+    if (!provider) return;
+    dbService.setSetting("lastActiveProvider", provider).catch((error) => {
+      console.error("Failed to save last active provider:", error);
     });
-  }, [selectedModel, lastUsedModels, isInitialized]);
+    if (model) {
+      setLastUsedModels((prev) => (prev[provider] === model ? prev : { ...prev, [provider]: model }));
+    }
+  }, []);
+
+  // Connect to whatever gets selected, and to the remembered connection on startup
+  useEffect(() => {
+    if (!isInitialized) return;
+    const isStartup = isStartupRef.current;
+    isStartupRef.current = false;
+
+    if (!selectedProvider || (isStartup && !autoConnect)) {
+      setIsModelsLoading(false);
+      return;
+    }
+    connectTo(selectedProvider, { fallback: isStartup });
+  }, [selectedProvider, isInitialized]);
+
+  // Reconnect when an offline connection may be back. Only servers on this machine
+  // or network are polled, so cloud providers see no background traffic.
+  useEffect(() => {
+    if (!isInitialized || !autoConnect || isModelsLoading) return;
+    if (!selectedProvider || providerStatus[selectedProvider]) return;
+
+    const retry = () => connectTo(selectedProvider);
+    window.addEventListener("focus", retry);
+    window.addEventListener("online", retry);
+    const isCloud = connections.find((c) => c.id === selectedProvider)?.scope === "cloud";
+    const timer = isCloud ? undefined : setInterval(retry, 20_000);
+
+    return () => {
+      window.removeEventListener("focus", retry);
+      window.removeEventListener("online", retry);
+      clearInterval(timer);
+    };
+  }, [isInitialized, autoConnect, isModelsLoading, selectedProvider, providerStatus, connections]);
+
+  const reconnect = useCallback(async () => {
+    if (selectedProviderRef.current) await connectTo(selectedProviderRef.current);
+  }, []);
 
   const handleModelChange = useCallback((model: string) => {
-    handleModelChangeHandler(model, selectedProvider, setSelectedModel, setLastUsedModels);
-  }, [selectedProvider]);
+    setSelectedModel(model);
+    rememberSelection(selectedProviderRef.current, model);
+  }, []);
 
   const handleProviderChange = useCallback((newProvider: AIProvider) => {
-    handleProviderChangeHandler(
-      newProvider,
-      lastUsedModels,
-      models,
-      setSelectedProvider,
-      setSelectedModel
-    );
-  }, [lastUsedModels, models]);
+    setConnectionNotice(null);
+    setConnectionError(null);
+    setSelectedProvider(newProvider);
+    setSelectedModel(lastUsedModelsRef.current[newProvider] ?? "");
+    rememberSelection(newProvider);
+  }, []);
+
+  // Re-read connections after they were edited. Passing an id switches to it and connects.
+  const refreshConnections = useCallback(async (selectId?: AIProvider) => {
+    const list = await LLMService.listConnections();
+    connectionsRef.current = list;
+    setConnections(list);
+
+    const current = selectedProviderRef.current;
+    const nextId = selectId ?? (list.some((c) => c.id === current) ? current : list[0]?.id ?? "");
+    if (nextId !== current) handleProviderChange(nextId);
+    else if (selectId) await connectTo(selectId);
+    if (!nextId) setSelectedModel("");
+  }, []);
+
+  const setAutoConnect = useCallback((enabled: boolean) => {
+    setAutoConnectState(enabled);
+    dbService.setSetting("autoConnect", String(enabled)).catch((error) => {
+      console.error("Failed to save auto-connect setting:", error);
+    });
+  }, []);
+
+  const getProviderName = () =>
+    connectionsRef.current.find((c) => c.id === selectedProviderRef.current)?.name ?? "This connection";
 
   // Message handler
   const sendMessage = useCallback(
-    async (content: string, options?: { askAll?: boolean }) => {
+    async (content: string, options?: { askAll?: boolean; continueLast?: boolean }) => {
       const askAll = options?.askAll ?? false;
+      const continueLast = options?.continueLast ?? false;
       const targets = askAll ? participants : activeTarget ? [activeTarget] : [];
+      rememberSelection(selectedProvider, selectedModel);
 
-      await sendMessageHandler(content, {
-        selectedModel,
-        selectedProvider,
-        isLoading,
-        currentSessionId,
-        getMessages: () => messagesRef.current,
-        systemPrompt,
-        targets,
-        providerStatus,
-        setIsLoading,
-        setError,
-        setMessages,
-        setSessions,
-        abortControllerRef
-      });
+      await sendMessageHandler(
+        content,
+        {
+          selectedModel,
+          selectedProvider,
+          providerName: getProviderName(),
+          isLoading,
+          currentSessionId,
+          getMessages: () => messagesRef.current,
+          systemPrompt,
+          targets,
+          providerStatus,
+          setIsLoading,
+          setError,
+          setMessages,
+          setSessions,
+          abortControllerRef
+        },
+        continueLast
+          ? { skipUserMessage: true, continueNudge: "(Continue your previous response from exactly where it stopped. Do not repeat anything, do not add preamble — continue seamlessly.)" }
+          : {}
+      );
     },
     [
       selectedModel,
@@ -385,6 +484,147 @@ export function useChat() {
       providerStatus,
     ]
   );
+
+  // Truncate the conversation after `messageId` (state + DB) and return the kept slice
+  const truncateAfterMessage = useCallback(
+    async (messageId: string): Promise<ChatMessage[]> => {
+      const current = messagesRef.current;
+      const idx = current.findIndex((m) => m.id === messageId);
+      if (idx === -1) return current;
+      const kept = current.slice(0, idx + 1);
+      const removedIds = current.slice(idx + 1).map((m) => m.id);
+
+      setMessages(kept);
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === currentSessionId ? { ...s, messages: [...kept], updatedAt: new Date().toISOString() } : s
+        )
+      );
+
+      if (removedIds.length > 0 && currentSessionId) {
+        try {
+          await dbService.deleteMessages(removedIds);
+        } catch (err) {
+          console.error("Failed to delete truncated messages:", err);
+        }
+      }
+      return kept;
+    },
+    [currentSessionId]
+  );
+
+  // Edit a user message; optionally truncate everything after it and regenerate the response
+  const editUserMessage = useCallback(
+    async (messageId: string, newContent: string, resend: boolean) => {
+      const current = messagesRef.current;
+      const idx = current.findIndex((m) => m.id === messageId);
+      if (idx === -1) return;
+
+      // Update content in state and DB
+      setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, content: newContent } : m)));
+      try {
+        await dbService.updateMessage(messageId, { content: newContent });
+      } catch (err) {
+        console.error("Failed to update message:", err);
+      }
+
+      if (!resend) {
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === currentSessionId ? { ...s, updatedAt: new Date().toISOString() } : s
+          )
+        );
+        return;
+      }
+
+      // Drop everything after this message, then regenerate from the edited text
+      const kept = await truncateAfterMessage(messageId);
+      const target = activeTarget;
+      const targets = target ? [target] : [];
+      rememberSelection(selectedProvider, selectedModel);
+      await sendMessageHandler(
+        newContent,
+        {
+          selectedModel,
+          selectedProvider,
+          providerName: getProviderName(),
+          isLoading: false,
+          currentSessionId,
+          getMessages: () => kept,
+          systemPrompt,
+          targets,
+          providerStatus,
+          setIsLoading,
+          setError,
+          setMessages,
+          setSessions,
+          abortControllerRef
+        },
+        { skipUserMessage: true }
+      );
+    },
+    [currentSessionId, activeTarget, selectedModel, selectedProvider, systemPrompt, providerStatus, truncateAfterMessage]
+  );
+
+  // Resend a user message as-is: truncate everything after it and regenerate
+  const resendFromMessage = useCallback(
+    async (messageId: string) => {
+      const current = messagesRef.current;
+      const message = current.find((m) => m.id === messageId);
+      if (!message || message.role !== "user") return;
+      await editUserMessage(messageId, message.content, true);
+    },
+    [editUserMessage]
+  );
+
+  // Branch the conversation at `messageId` into a brand-new session
+  const branchFromMessage = useCallback(
+    async (messageId: string) => {
+      const current = messagesRef.current;
+      const idx = current.findIndex((m) => m.id === messageId);
+      if (idx === -1 || !currentSessionId) return;
+
+      const source = sessions.find((s) => s.id === currentSessionId);
+      const branchMessages: ChatMessage[] = current.slice(0, idx + 1).map((m) => ({
+        ...m,
+        id: crypto.randomUUID(),
+        timestamp: new Date(m.timestamp),
+      }));
+
+      const newSession: ChatSession = {
+        id: crypto.randomUUID(),
+        title: `${source?.title ? source.title : "Conversation"} (branch)`,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: branchMessages,
+        provider: selectedProvider,
+        selectedModel,
+        characterId: source?.characterId,
+        participantIds: source?.participantIds,
+      };
+
+      try {
+        await dbService.createSession(newSession);
+        await dbService.addMessages(newSession.id, branchMessages);
+      } catch (err) {
+        console.error("Failed to create branch session:", err);
+        setError("Failed to create branch session");
+        return;
+      }
+
+      setSessions((prev) => [newSession, ...prev]);
+      isSwitchingSessionRef.current = true;
+      setCurrentSessionId(newSession.id);
+      setMessages(branchMessages);
+      setTimeout(() => { isSwitchingSessionRef.current = false; }, 0);
+    },
+    [sessions, currentSessionId, selectedProvider, selectedModel]
+  );
+
+  // Ask the model to continue its last response without a new user message
+  const continueResponse = useCallback(async () => {
+    await sendMessage("", { continueLast: true });
+  }, [sendMessage]);
 
   const searchChats = useCallback(
     async (query: string) => {
@@ -445,7 +685,8 @@ export function useChat() {
             characters,
             isSwitchingSessionRef,
             sessionSignatureCache,
-            setActiveTargetId
+            setActiveTargetId,
+            connectionExists: (id) => connectionsRef.current.some((c) => c.id === id)
           },
           characters,
           setSelectedProvider,
@@ -657,14 +898,25 @@ export function useChat() {
     isLoading,
     isModelsLoading,
     error,
-    isOllamaConnected,
     providerStatus,
+    connections,
+    presets,
+    encryptionAvailable,
+    connectionError,
+    connectionNotice,
+    dismissConnectionNotice: () => setConnectionNotice(null),
+    refreshConnections,
+    autoConnect,
+    setAutoConnect,
     sendMessage,
+    continueResponse,
+    editUserMessage,
+    resendFromMessage,
+    branchFromMessage,
     clearChat,
     loadSession,
     stopGeneration,
-    loadModels,
-    checkConnections,
+    reconnect,
     systemPrompt,
     setSystemPrompt,
     searchChats,

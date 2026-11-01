@@ -1,10 +1,11 @@
-import { app, BrowserWindow, Menu, shell, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, Menu, shell, ipcMain, dialog, net, safeStorage } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { promises as fs } from 'fs'
 import { execFile } from 'child_process'
 import os from 'os'
 import DatabaseService from './database.js'
+import { ConnectionManager, registerLlmIpc } from './llm/connections.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -137,6 +138,7 @@ function createMenu() {
 function setupDatabase() {
   const db = new DatabaseService();
   setupIpcHandlers(db);
+  registerLlmIpc(ipcMain, new ConnectionManager({ db, safeStorage, fetchImpl: (...args) => net.fetch(...args) }));
 }
 
 function setupIpcHandlers(db) {
@@ -153,6 +155,7 @@ function setupIpcHandlers(db) {
   // Message operations
   ipcMain.handle('db:addMessages', async (event, sessionId, messages) => db.addMessages(sessionId, messages));
   ipcMain.handle('db:updateMessage', async (event, messageId, updates) => db.updateMessage(messageId, updates));
+  ipcMain.handle('db:deleteMessages', async (event, messageIds) => db.deleteMessages(messageIds));
   ipcMain.handle('db:searchMessages', async (event, query) => db.searchMessages(query));
 
   // Settings operations

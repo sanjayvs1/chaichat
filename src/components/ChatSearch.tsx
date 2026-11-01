@@ -4,7 +4,7 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Badge } from './ui/badge'
 import { Calendar, MessageSquare, User, Bot, Search, Filter } from 'lucide-react'
-import type { ChatMessage } from '../types/ollama'
+import type { ChatMessage } from '../types/chat'
 
 type SearchFilter = 'all' | 'user' | 'assistant' | 'today' | 'week' | 'month'
 

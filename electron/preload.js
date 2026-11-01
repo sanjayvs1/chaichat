@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Message operations
     addMessages: (sessionId, messages) => ipcRenderer.invoke('db:addMessages', sessionId, messages),
     updateMessage: (messageId, updates) => ipcRenderer.invoke('db:updateMessage', messageId, updates),
+    deleteMessages: (messageIds) => ipcRenderer.invoke('db:deleteMessages', messageIds),
     searchMessages: (query) => ipcRenderer.invoke('db:searchMessages', query),
     
     // Settings operations
@@ -47,6 +48,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getAllSavedScripts: () => ipcRenderer.invoke('db:getAllSavedScripts'),
     updateSavedScript: (scriptId, updates) => ipcRenderer.invoke('db:updateSavedScript', scriptId, updates),
     deleteSavedScript: (scriptId) => ipcRenderer.invoke('db:deleteSavedScript', scriptId)
+  },
+
+  // LLM connections. API keys go in here but never come back out.
+  llm: {
+    init: (legacy) => ipcRenderer.invoke('llm:init', legacy),
+    listConnections: () => ipcRenderer.invoke('llm:listConnections'),
+    saveConnection: (input) => ipcRenderer.invoke('llm:saveConnection', input),
+    deleteConnection: (id) => ipcRenderer.invoke('llm:deleteConnection', id),
+    forgetAllKeys: () => ipcRenderer.invoke('llm:forgetAllKeys'),
+    testConnection: (draft) => ipcRenderer.invoke('llm:testConnection', draft),
+    detectLocalServers: () => ipcRenderer.invoke('llm:detectLocalServers'),
+    listModels: (id) => ipcRenderer.invoke('llm:listModels', id),
+    startChat: (requestId, request) => ipcRenderer.invoke('llm:startChat', requestId, request),
+    abortChat: (requestId) => ipcRenderer.invoke('llm:abortChat', requestId),
+    onChatEvent: (requestId, callback) => {
+      const listener = (_event, chatEvent) => {
+        if (chatEvent.requestId === requestId) callback(chatEvent)
+      }
+      ipcRenderer.on('llm:chat-event', listener)
+      return () => ipcRenderer.removeListener('llm:chat-event', listener)
+    }
   },
 
   // Script execution
