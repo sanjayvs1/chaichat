@@ -2,8 +2,10 @@
 // speak the OpenAI chat format, so this is the only place that talks to them.
 
 const LIST_TIMEOUT_MS = 8000
+const EMBEDDING_TIMEOUT_MS = 60000
 const DEFAULT_TEMPERATURE = 0.7
 const NON_CHAT_MODEL = /embed|whisper|tts|dall-?e|moderation|rerank|transcribe|realtime|image|audio/i
+const EMBEDDING_MODEL = /embed|bge|minilm|mxbai/i
 
 export class LLMError extends Error {
   constructor(message, status) {
@@ -92,7 +94,7 @@ function connectionError(error, connection) {
 /**
  * @param connection { baseUrl, apiKey, label, defaultModel?, modelsQuery? }
  */
-export async function listModels(connection, { fetchImpl = fetch, timeoutMs = LIST_TIMEOUT_MS } = {}) {
+export async function listModels(connection, { fetchImpl = fetch, timeoutMs = LIST_TIMEOUT_MS, embeddings = false } = {}) {
   const { baseUrl, apiKey, label, defaultModel, modelsQuery } = connection
   const manual = defaultModel ? [{ name: defaultModel }] : []
 
@@ -128,6 +130,8 @@ export async function listModels(connection, { fetchImpl = fetch, timeoutMs = LI
     }))
     .filter((model) => model.name)
 
+  if (embeddings) return models.filter((model) => EMBEDDING_MODEL.test(model.name))
+
   const chatModels = models.filter((model) => !NON_CHAT_MODEL.test(model.name))
   const listed = chatModels.length > 0 ? chatModels : models
   return [...manual.filter((m) => !listed.some((l) => l.name === m.name)), ...listed]
@@ -142,27 +146,42 @@ async function postChat(connection, body, signal, fetchImpl) {
   })
 }
 
+// Only what the user moved off its neutral value goes on the wire
+function samplingFields(params = {}) {
+  return {
+    temperature: params.temperature ?? DEFAULT_TEMPERATURE,
+    ...(params.topP !== undefined && params.topP !== 1 ? { top_p: params.topP } : {}),
+    ...(params.frequencyPenalty ? { frequency_penalty: params.frequencyPenalty } : {}),
+    ...(params.presencePenalty ? { presence_penalty: params.presencePenalty } : {}),
+    ...(params.stop?.length ? { stop: params.stop.slice(0, 4) } : {}),
+    ...(params.seed !== undefined && params.seed >= 0 ? { seed: params.seed } : {})
+  }
+}
+
 /**
  * Streams the reply as text chunks.
  * @param connection { baseUrl, apiKey, label, maxTokens? }
+ * @param params { temperature?, topP?, frequencyPenalty?, presencePenalty?, maxTokens?, stop?, seed? }
  */
-export async function* streamChat(connection, { model, messages, signal }, { fetchImpl = fetch } = {}) {
-  const { apiKey, label, maxTokens } = connection
+export async function* streamChat(connection, { model, messages, params, signal }, { fetchImpl = fetch } = {}) {
+  const { apiKey, label } = connection
+  const maxTokens = params?.maxTokens || connection.maxTokens
+  const sampling = samplingFields(params)
   const body = {
     model,
     messages: messages.map(({ role, content }) => ({ role, content })),
     stream: true,
-    temperature: DEFAULT_TEMPERATURE,
+    ...sampling,
     ...(maxTokens ? { max_tokens: maxTokens } : {})
   }
 
   let response
   try {
     response = await postChat(connection, body, signal, fetchImpl)
-    // Some models refuse a custom temperature; the provider default is fine for those
+    // Some models refuse custom sampling; the provider defaults are fine for those
     if (response.status === 400) {
       await response.body?.cancel().catch(() => {})
-      delete body.temperature
+      for (const field of Object.keys(sampling)) delete body[field]
       response = await postChat(connection, body, signal, fetchImpl)
     }
   } catch (error) {
@@ -212,4 +231,34 @@ export async function* streamChat(connection, { model, messages, signal }, { fet
   } finally {
     reader.cancel().catch(() => {})
   }
+}
+
+/**
+ * @returns one vector per input, in input order
+ */
+export async function embed(connection, { model, input }, { fetchImpl = fetch } = {}) {
+  const { apiKey, label } = connection
+
+  let response
+  try {
+    response = await fetchImpl(`${connection.baseUrl}/embeddings`, {
+      method: 'POST',
+      headers: buildHeaders(apiKey),
+      body: JSON.stringify({ model, input }),
+      signal: AbortSignal.timeout(EMBEDDING_TIMEOUT_MS)
+    })
+  } catch (error) {
+    throw connectionError(error, connection)
+  }
+
+  if (response.status === 404 || response.status === 405) {
+    throw new LLMError(`${label} doesn't offer an embeddings API.`, response.status)
+  }
+  if (!response.ok) throw httpError(response.status, await readErrorDetail(response, apiKey), label)
+
+  const payload = await response.json().catch(() => null)
+  if (!Array.isArray(payload?.data) || payload.data.length !== input.length) {
+    throw new LLMError(`${label} returned an unexpected embeddings response.`)
+  }
+  return [...payload.data].sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map((item) => item.embedding)
 }

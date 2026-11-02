@@ -35,7 +35,7 @@ export function ProviderSelector({ connections, selectedProvider, onProviderChan
 
   return (
     <Select value={selected?.id ?? ''} onValueChange={handleChange} disabled={disabled}>
-      <SelectTrigger className="w-full sm:w-44 h-8 text-sm" aria-label="Select connection">
+      <SelectTrigger className="h-8 w-auto max-w-40 gap-1 border-0 bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:text-foreground dark:bg-transparent" aria-label="Select connection">
         <SelectValue placeholder="Add connection">
           {selected && (
             <div className="flex items-center space-x-2 min-w-0">

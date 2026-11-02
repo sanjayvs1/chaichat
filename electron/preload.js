@@ -37,6 +37,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     updateMemory: (memoryId, updates) => ipcRenderer.invoke('db:updateMemory', memoryId, updates),
     deleteMemory: (memoryId) => ipcRenderer.invoke('db:deleteMemory', memoryId),
     
+    // Persona operations
+    getAllPersonas: () => ipcRenderer.invoke('db:getAllPersonas'),
+    savePersona: (persona) => ipcRenderer.invoke('db:savePersona', persona),
+    deletePersona: (personaId) => ipcRenderer.invoke('db:deletePersona', personaId),
+
     // Export/Import operations
     exportSessions: () => ipcRenderer.invoke('db:exportSessions'),
     importSessions: (data) => ipcRenderer.invoke('db:importSessions', data),
@@ -60,6 +65,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     testConnection: (draft) => ipcRenderer.invoke('llm:testConnection', draft),
     detectLocalServers: () => ipcRenderer.invoke('llm:detectLocalServers'),
     listModels: (id) => ipcRenderer.invoke('llm:listModels', id),
+    listEmbeddingModels: (id) => ipcRenderer.invoke('llm:listEmbeddingModels', id),
     startChat: (requestId, request) => ipcRenderer.invoke('llm:startChat', requestId, request),
     abortChat: (requestId) => ipcRenderer.invoke('llm:abortChat', requestId),
     onChatEvent: (requestId, callback) => {
@@ -69,6 +75,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('llm:chat-event', listener)
       return () => ipcRenderer.removeListener('llm:chat-event', listener)
     }
+  },
+
+  // Chat vector store
+  vectors: {
+    sync: (request) => ipcRenderer.invoke('vectors:sync', request),
+    query: (request) => ipcRenderer.invoke('vectors:query', request),
+    stats: (sessionId, source) => ipcRenderer.invoke('vectors:stats', sessionId, source),
+    purge: (sessionId) => ipcRenderer.invoke('vectors:purge', sessionId)
   },
 
   // Script execution

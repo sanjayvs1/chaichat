@@ -7,6 +7,16 @@ Simple chat client for local LLM servers and cloud LLM APIs.
 
 Add a connection in the app to chat with AI models. Anything that speaks the OpenAI chat format works, and API keys are encrypted with your OS account.
 
+It's also a simple take on SillyTavern, for roleplay and long-running stories:
+
+- **Characters**: import and export Tavern character cards (V1, V2 and V3, as PNG or JSON)
+- **Chat**: swipe between alternate replies, continue, write your reply for you, and edit or delete any message
+- **Personas**: decide who you are in the story, with `{{char}}` and `{{user}}` filled in everywhere
+- **Group chats**: talk to one character or have everyone answer in turn
+- **Summaries**: a rolling recap keeps long chats on track
+- **Recall**: older messages come back when they're relevant, using any embeddings API or built-in keyword matching
+- **Control**: sampling settings, an author's note, and a view of exactly what's sent to the model
+
 Built with Electron, Vite, React and SQLite.
 
 ### Downloads

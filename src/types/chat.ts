@@ -73,6 +73,8 @@ export interface ChatMessage {
   timestamp: Date
   characterId?: string // Author character for assistant messages
   targetId?: string // Character a user message is addressed to (multi-character chats)
+  swipes?: string[] // Alternate versions of an assistant message, content is swipes[swipeIndex]
+  swipeIndex?: number
 }
 
 // Represents a stored past conversation
@@ -86,6 +88,10 @@ export interface ChatSession {
   participantIds?: string[] // All character IDs participating in this chat
   provider?: AIProvider // Optional provider saved with the session
   selectedModel?: string // Optional model saved with the session
+  summary?: string // Rolling summary of the older part of the chat
+  summaryThroughId?: string // Last message the summary covers
+  authorNote?: string // Standing note kept near the end of every prompt
+  personaId?: string // Overrides the active persona for this chat
 }
 
 // Represents a roleplay character defined by a system prompt
@@ -96,6 +102,17 @@ export interface Character {
   description: string // Personality/background blurb, folded into the prompt if no systemPrompt
   systemPrompt?: string // Full character definition sent as the system message
   greeting?: string // Optional opening message the character starts chats with
+  alternateGreetings?: string[] // More openings to swipe through
+  personality?: string // Short personality summary
+  scenario?: string // Where the chat takes place
+  messageExample?: string // Example dialogue, blocks separated by <START>
+  postHistory?: string // Instructions placed after the chat history
+  creator?: string
+  creatorNotes?: string // For the reader, never sent to the model
+  characterVersion?: string
+  tags?: string[]
+  favorite?: boolean
+  cardExtras?: string // JSON of card data we don't use, kept so exports round-trip
   avatar?: string // Optional avatar image URL or emoji
   memoryEnabled?: boolean // Whether long-term memory is enabled for this character
   isDefault?: boolean // Whether this is a default character
@@ -113,17 +130,88 @@ export interface CharacterMemory {
   sourceSessionId?: string | null
 }
 
-// For character search and filtering
-export interface CharacterSearchResult {
-  character: Character
-  relevanceScore?: number
+// Who the user plays as
+export interface Persona {
+  id: string
+  name: string
+  description: string
+  avatar?: string
+  createdAt: string
+  updatedAt: string
 }
 
-// For character import/export
-export interface CharacterExportData {
-  version: string
-  exportDate: string
-  characters: Character[]
+// Sampling sent with each request
+export interface GenerationParams {
+  temperature: number
+  topP: number
+  frequencyPenalty: number
+  presencePenalty: number
+  maxTokens: number // 0 leaves it to the server
+  contextTokens: number // Prompt budget, oldest history is dropped to fit
+  stop: string[]
+  seed: number // -1 is random
+}
+
+export interface SummarySettings {
+  enabled: boolean
+  everyMessages: number
+  maxWords: number
+  prompt: string
+}
+
+export type VectorScope = 'chat' | 'character'
+
+// Empty connectionId/model means the built-in embedding
+export interface VectorSource {
+  connectionId: string
+  model: string
+}
+
+export interface VectorSettings extends VectorSource {
+  enabled: boolean
+  scope: VectorScope
+  topK: number
+}
+
+export type GroupContext = 'separate' | 'shared'
+export type ChatFont = 'serif' | 'sans'
+export type AccentName = 'chai' | 'rose' | 'jade' | 'iris'
+
+export interface AppSettings {
+  generation: GenerationParams
+  summary: SummarySettings
+  vectors: VectorSettings
+  groupContext: GroupContext
+  personaId: string | null
+  chatFont: ChatFont
+  accent: AccentName
+  ambience: boolean
+}
+
+export interface VectorMatch {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  timestamp: string
+  characterId?: string | null
+  sessionId: string
+  score: number
+}
+
+// One labelled piece of the prompt, shown by the prompt inspector
+export interface PromptSection {
+  label: string
+  tokens: number
+}
+
+export interface PromptReport {
+  sections: PromptSection[]
+  totalTokens: number
+  budget: number
+  historyIncluded: number
+  historyTotal: number
+  recalled: number
+  messages: Array<Pick<ChatMessage, 'role' | 'content'>>
 }
 
 // Saved Python script from LLM responses

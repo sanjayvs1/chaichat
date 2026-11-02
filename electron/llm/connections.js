@@ -1,5 +1,5 @@
 import crypto from 'crypto'
-import { LLMError, listModels, networkScope, normalizeBaseUrl, streamChat } from './client.js'
+import { LLMError, embed, listModels, networkScope, normalizeBaseUrl, streamChat } from './client.js'
 
 // Adding a provider means adding a row here, as long as it speaks the OpenAI format.
 export const PRESETS = [
@@ -230,6 +230,19 @@ export class ConnectionManager {
     }
   }
 
+  async embeddingModels(id) {
+    try {
+      const connection = this.requireConnection(id)
+      return { ok: true, models: await listModels(connection, { fetchImpl: this.fetchImpl, embeddings: true }) }
+    } catch (error) {
+      return { ok: false, error: failureMessage(error) }
+    }
+  }
+
+  embed(id, model, input) {
+    return embed(this.requireConnection(id), { model, input }, { fetchImpl: this.fetchImpl })
+  }
+
   // Checks unsaved form values, falling back to the stored key for the same server
   async test(draft) {
     try {
@@ -344,7 +357,7 @@ export class ConnectionManager {
     this.db.setSetting(MIGRATED_SETTING, 'true')
   }
 
-  async chat(sender, requestId, { connectionId, model, messages }) {
+  async chat(sender, requestId, { connectionId, model, messages, params }) {
     const controller = new AbortController()
     this.activeChats.set(requestId, controller)
     const send = (event) => {
@@ -355,7 +368,7 @@ export class ConnectionManager {
       const connection = this.requireConnection(connectionId)
       const stream = streamChat(
         connection,
-        { model, messages, signal: controller.signal },
+        { model, messages, params, signal: controller.signal },
         { fetchImpl: this.fetchImpl }
       )
       for await (const text of stream) send({ type: 'delta', text })
@@ -398,6 +411,7 @@ export function registerLlmIpc(ipcMain, manager) {
   ipcMain.handle('llm:testConnection', async (event, draft) => manager.test(draft))
   ipcMain.handle('llm:detectLocalServers', async () => manager.detectLocalServers())
   ipcMain.handle('llm:listModels', async (event, id) => manager.models(id))
+  ipcMain.handle('llm:listEmbeddingModels', async (event, id) => manager.embeddingModels(id))
   ipcMain.handle('llm:startChat', (event, requestId, request) => {
     manager.chat(event.sender, requestId, request)
   })

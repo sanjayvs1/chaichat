@@ -1,43 +1,44 @@
-import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar'
+import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { getInitials, isEmoji } from '@/lib/character'
+import { nameHue } from '@/lib/cards'
 
 interface CharacterAvatarProps {
   avatar?: string // emoji or image URL
   name: string
   className?: string
-  fallbackClassName?: string
-  emojiClassName?: string
 }
 
 /**
  * Renders a character avatar that supports either an emoji or an image URL.
- * Emojis render as large text; URLs render as images; otherwise initials are shown.
+ * Without an image, the character's own hue fills the frame so nobody looks alike.
  */
-export function CharacterAvatar({ avatar, name, className, fallbackClassName, emojiClassName }: CharacterAvatarProps) {
+export function CharacterAvatar({ avatar, name, className }: CharacterAvatarProps) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
   const value = avatar?.trim()
+  const hue = nameHue(name)
 
-  if (value && !isEmoji(value)) {
-    return (
-      <Avatar className={className}>
-        <AvatarImage src={value} alt={name} />
-        <AvatarFallback className={fallbackClassName}>
-          {getInitials(name)}
-        </AvatarFallback>
-      </Avatar>
-    )
-  }
+  const showImage = value && !isEmoji(value) && failedSrc !== value
 
   return (
-    <Avatar className={className}>
-      <AvatarImage src={undefined} alt={name} />
-      <AvatarFallback className={cn('select-none', fallbackClassName)}>
-        {value ? (
-          <span className={cn('leading-none', emojiClassName)}>{value}</span>
-        ) : (
-          getInitials(name)
-        )}
-      </AvatarFallback>
-    </Avatar>
+    <span
+      className={cn(
+        'relative flex shrink-0 select-none items-center justify-center overflow-hidden rounded-full font-display text-white',
+        className
+      )}
+      style={{ background: `linear-gradient(150deg, oklch(0.55 0.1 ${hue}), oklch(0.34 0.08 ${(hue + 35) % 360}))` }}
+    >
+      {showImage ? (
+        <img
+          src={value}
+          alt={name}
+          draggable={false}
+          onError={() => setFailedSrc(value)}
+          className="h-full w-full object-cover object-top"
+        />
+      ) : (
+        <span className="leading-none" aria-label={name}>{value && isEmoji(value) ? value : getInitials(name)}</span>
+      )}
+    </span>
   )
 }

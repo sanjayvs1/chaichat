@@ -1,145 +1,135 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { Brain, ImagePlus, Plus, Save, Smile, Trash2, X } from 'lucide-react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Textarea } from './ui/textarea'
-import { Badge } from './ui/badge'
-import { ScrollArea } from './ui/scroll-area'
-import { Save, X, Wand2, Brain, Trash2, Plus, Smile, Link2 } from 'lucide-react'
-import { cn } from '@/lib/utils'
-import { dbService } from '../services/database'
-
-import type { Character, CharacterMemory } from '../types/chat'
 import { CharacterAvatar } from './CharacterAvatar'
+import { dbService } from '../services/database'
+import { fileToAvatar } from '@/lib/cards'
+import { estimateTokens } from '@/lib/tokens'
 import { isEmoji } from '@/lib/character'
+import { cn } from '@/lib/utils'
+import type { Character, CharacterMemory } from '../types/chat'
 
 const EMOJI_CHOICES = [
-  '🧙', '🧝', '🧛', '🧟', '🧚', '🥷', '🕵️', '👨‍🔬', '👩‍💻', '🤖',
-  '🐉', '🦊', '🐺', '🦉', '🐙', '🦄', '🐱', '🐶', '🐼', '🦁',
-  '👑', '🎭', '💀', '👻', '🧠', '⚡', '🌙', '🔮', '⚔️', '🚀',
-  '🌟', '🎨', '📚', '🎮', '🎵', '☕', '🍕', '🌵', '🌊', '🔥',
+  '🧙', '🧝', '🧛', '🧚', '🥷', '🕵️', '🤖', '🐉', '🦊', '🐺',
+  '🦉', '🐙', '🐱', '👑', '🎭', '💀', '👻', '🌙', '🔮', '⚔️',
+]
+
+type Tab = 'identity' | 'definition' | 'greetings' | 'advanced' | 'memory'
+
+const TABS: Array<{ id: Tab; label: string }> = [
+  { id: 'identity', label: 'Identity' },
+  { id: 'definition', label: 'Definition' },
+  { id: 'greetings', label: 'Greetings' },
+  { id: 'advanced', label: 'Advanced' },
+  { id: 'memory', label: 'Memory' },
 ]
 
 interface CharacterEditorProps {
   character?: Character
   onSave: (character: Character) => void
   onCancel: () => void
-  isLoading?: boolean
 }
 
-function composeSystemPrompt(name: string, tagline: string, description: string): string {
-  const lines = [`You are ${name}.`]
-  if (tagline) lines.push('', tagline)
-  if (description) lines.push('', 'Personality & background:', description.trim())
-  lines.push(
-    '',
-    'Roleplay guidelines:',
-    '- Always stay fully in character',
-    "- Speak, think, and react the way this character would",
-    '- Never break character or mention being an AI or language model',
-    '- Keep responses conversational, engaging and true to the character\'s voice'
+function Field({ label, hint, tokens, children }: { label: string; hint?: string; tokens?: string; children: React.ReactNode }) {
+  return (
+    <label className="block space-y-1.5">
+      <span className="flex items-baseline justify-between gap-3">
+        <span className="text-sm font-medium">{label}</span>
+        {tokens !== undefined && <span className="text-[11px] text-muted-foreground">~{estimateTokens(tokens)} tokens</span>}
+      </span>
+      {hint && <span className="block text-xs text-muted-foreground">{hint}</span>}
+      {children}
+    </label>
   )
-  return lines.join('\n')
 }
 
-export function CharacterEditor({ 
-  character, 
-  onSave, 
-  onCancel, 
-  isLoading = false 
-}: CharacterEditorProps) {
-  const [formData, setFormData] = useState({
-    name: '',
-    avatar: '',
-    tagline: '',
-    description: '',
-    systemPrompt: '',
-    greeting: '',
-    memoryEnabled: true,
-    promptTouched: false
+export function CharacterEditor({ character, onSave, onCancel }: CharacterEditorProps) {
+  const [tab, setTab] = useState<Tab>('identity')
+  const [form, setForm] = useState({
+    name: character?.name ?? '',
+    avatar: character?.avatar ?? '',
+    tagline: character?.tagline ?? '',
+    tags: character?.tags?.join(', ') ?? '',
+    creator: character?.creator ?? '',
+    characterVersion: character?.characterVersion ?? '',
+    creatorNotes: character?.creatorNotes ?? '',
+    description: character?.description ?? '',
+    personality: character?.personality ?? '',
+    scenario: character?.scenario ?? '',
+    messageExample: character?.messageExample ?? '',
+    systemPrompt: character?.systemPrompt ?? '',
+    postHistory: character?.postHistory ?? '',
+    greeting: character?.greeting ?? '',
+    memoryEnabled: character?.memoryEnabled !== false,
   })
-  
-  const [errors, setErrors] = useState<Record<string, string>>({})
-  const [avatarMode, setAvatarMode] = useState<'emoji' | 'url'>('emoji')
-
-  // Memory state (only editable for existing characters)
+  const [alternates, setAlternates] = useState<string[]>(character?.alternateGreetings ?? [])
+  const [error, setError] = useState('')
   const [memories, setMemories] = useState<CharacterMemory[]>([])
   const [newMemory, setNewMemory] = useState('')
+  const avatarInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (character) {
-      setFormData({
-        name: character.name,
-        avatar: character.avatar || '',
-        tagline: character.tagline || '',
-        description: character.description,
-        systemPrompt: character.systemPrompt || '',
-        greeting: character.greeting || '',
-        memoryEnabled: character.memoryEnabled !== false,
-        promptTouched: !!character.systemPrompt
-      })
-      setAvatarMode(character.avatar && !isEmoji(character.avatar) ? 'url' : 'emoji')
-      
-      // Load memories for existing characters
-      dbService.getMemoriesForCharacter(character.id)
-        .then(setMemories)
-        .catch(err => console.error('Failed to load memories:', err))
-    }
+    if (!character) return
+    dbService.getMemoriesForCharacter(character.id)
+      .then(setMemories)
+      .catch(err => console.error('Failed to load memories:', err))
   }, [character])
 
-  const effectivePrompt = useMemo(
-    () => formData.systemPrompt || composeSystemPrompt(formData.name, formData.tagline, formData.description),
-    [formData.systemPrompt, formData.name, formData.tagline, formData.description]
-  )
+  const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
+    setForm((previous) => ({ ...previous, [key]: value }))
 
-  // Rough token estimate (~4 chars per token) to help size the prompt
-  const promptTokens = Math.ceil(effectivePrompt.length / 4)
-
-  const validateForm = () => {
-    const newErrors: Record<string, string> = {}
-    
-    if (!formData.name.trim()) {
-      newErrors.name = 'Name is required'
+  const handleAvatarFile = async (file: File | undefined) => {
+    if (!file) return
+    try {
+      set('avatar', await fileToAvatar(file))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "That image couldn't be read.")
     }
-    
-    if (!formData.description.trim() && !formData.systemPrompt.trim()) {
-      newErrors.description = 'Describe the character or write a system prompt'
-    }
-    
-    setErrors(newErrors)
-    return Object.keys(newErrors).length === 0
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    
-    if (!validateForm()) return
+  const handleSave = () => {
+    const name = form.name.trim()
+    if (!name) {
+      setTab('identity')
+      setError('Give them a name first.')
+      return
+    }
+    if (!form.description.trim() && !form.systemPrompt.trim()) {
+      setTab('definition')
+      setError('Describe who they are, so the model has something to work with.')
+      return
+    }
 
     const now = new Date().toISOString()
-    const name = formData.name.trim()
-    const tagline = formData.tagline.trim()
-    const description = formData.description.trim()
-
-    const characterData: Character = {
-      id: character?.id || crypto.randomUUID(),
+    onSave({
+      id: character?.id ?? crypto.randomUUID(),
       name,
-      tagline: tagline || undefined,
-      description,
-      // Persist an explicit prompt once composed/touched so it stays stable
-      systemPrompt: formData.promptTouched || formData.systemPrompt
-        ? formData.systemPrompt
-        : composeSystemPrompt(name, tagline, description),
-      greeting: formData.greeting.trim() || undefined,
-      avatar: formData.avatar.trim() || undefined,
-      memoryEnabled: formData.memoryEnabled,
-      isDefault: character?.isDefault || false,
-      createdAt: character?.createdAt || now,
-      updatedAt: now
-    }
-
-    onSave(characterData)
+      avatar: form.avatar.trim() || undefined,
+      tagline: form.tagline.trim() || '',
+      tags: form.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
+      creator: form.creator.trim(),
+      characterVersion: form.characterVersion.trim(),
+      creatorNotes: form.creatorNotes.trim(),
+      description: form.description.trim(),
+      personality: form.personality.trim(),
+      scenario: form.scenario.trim(),
+      messageExample: form.messageExample.trim(),
+      systemPrompt: form.systemPrompt.trim(),
+      postHistory: form.postHistory.trim(),
+      greeting: form.greeting.trim(),
+      alternateGreetings: alternates.map((text) => text.trim()).filter(Boolean),
+      memoryEnabled: form.memoryEnabled,
+      favorite: character?.favorite ?? false,
+      cardExtras: character?.cardExtras,
+      isDefault: character?.isDefault ?? false,
+      createdAt: character?.createdAt ?? now,
+      updatedAt: now,
+    })
   }
 
-  const addMemoryManually = async () => {
+  const addMemory = async () => {
     if (!newMemory.trim() || !character) return
     const now = new Date().toISOString()
     const memory: CharacterMemory = {
@@ -147,7 +137,7 @@ export function CharacterEditor({
       characterId: character.id,
       content: newMemory.trim(),
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
     }
     try {
       await dbService.createMemory(memory)
@@ -167,247 +157,263 @@ export function CharacterEditor({
     }
   }
 
+  const name = form.name.trim() || 'this character'
+
   return (
-    <div className="flex flex-col h-full min-h-0">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4 mb-4 pr-8">
-        <div>
-          <h1 className="text-xl font-semibold">
-            {character ? 'Edit Character' : 'Create Character'}
-          </h1>
-          <p className="text-muted-foreground text-sm mt-1">
-            Define who they are — the app turns it into their system prompt automatically.
-          </p>
-        </div>
-        <Button variant="ghost" size="icon" onClick={onCancel} className="shrink-0">
-          <X className="h-4 w-4" />
-        </Button>
-      </div>
+    <div className="grid h-full min-h-0 grid-cols-[13rem_minmax(0,1fr)]">
+      <aside className="flex min-h-0 flex-col border-r bg-sidebar p-4">
+        <button
+          type="button"
+          onClick={() => avatarInputRef.current?.click()}
+          className="group relative aspect-[3/4] w-full overflow-hidden rounded-xl"
+          aria-label="Choose a portrait"
+        >
+          <CharacterAvatar avatar={form.avatar} name={form.name || '?'} className="h-full w-full rounded-none text-5xl" />
+          <span className="absolute inset-0 flex items-center justify-center bg-black/45 text-white opacity-0 transition-opacity group-hover:opacity-100">
+            <ImagePlus className="h-6 w-6" />
+          </span>
+        </button>
+        <input
+          ref={avatarInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            handleAvatarFile(e.target.files?.[0])
+            e.target.value = ''
+          }}
+        />
 
-      <ScrollArea className="flex-1 min-h-0 pr-2">
-        <form onSubmit={handleSubmit} className="space-y-5 pb-4">
-          {/* Identity */}
-          <div className="rounded-lg border bg-muted/20 p-4 space-y-4">
-            <div className="flex items-start gap-4">
-              {/* Live preview avatar */}
-              <CharacterAvatar
-                avatar={formData.avatar}
-                name={formData.name || '?'}
-                className="h-16 w-16 flex-shrink-0 text-lg"
-              />
-              <div className="flex-1 min-w-0 space-y-3">
-                <Input
-                  value={formData.name}
-                  onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-                  placeholder="Character name *"
-                  className={cn('text-base font-medium', errors.name && 'border-destructive')}
-                />
-                {errors.name && <p className="text-xs text-destructive">{errors.name}</p>}
-                <Input
-                  value={formData.tagline}
-                  onChange={(e) => setFormData(prev => ({ ...prev, tagline: e.target.value }))}
-                  placeholder="Tagline — one line about them (optional)"
-                  className="text-sm"
-                />
-              </div>
-            </div>
+        <nav className="mt-4 space-y-0.5" aria-label="Character sections">
+          {TABS.map(({ id, label }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setTab(id)}
+              aria-current={tab === id ? 'page' : undefined}
+              className={cn(
+                'w-full rounded-lg px-3 py-1.5 text-left text-sm transition-colors',
+                tab === id ? 'bg-accent font-medium' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+      </aside>
 
-            {/* Avatar picker */}
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium">Avatar</span>
-                <div className="flex rounded-md border overflow-hidden">
-                  <button
-                    type="button"
-                    onClick={() => setAvatarMode('emoji')}
-                    className={cn(
-                      'px-2 py-1 text-xs flex items-center gap-1 transition-colors',
-                      avatarMode === 'emoji' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
-                    )}
-                  >
-                    <Smile className="h-3 w-3" /> Emoji
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAvatarMode('url')}
-                    className={cn(
-                      'px-2 py-1 text-xs flex items-center gap-1 transition-colors',
-                      avatarMode === 'url' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
-                    )}
-                  >
-                    <Link2 className="h-3 w-3" /> Image
-                  </button>
+      <div className="flex min-h-0 flex-col">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
+          <h2 className="pr-8 font-display text-2xl font-medium tracking-tight">
+            {character ? `Editing ${character.name}` : 'A new character'}
+          </h2>
+
+          {tab === 'identity' && (
+            <>
+              <Field label="Name">
+                <Input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Who are they?" />
+              </Field>
+              <Field label="Tagline" hint="One line, shown on their card.">
+                <Input value={form.tagline} onChange={(e) => set('tagline', e.target.value)} placeholder="Hard-boiled 1940s private eye" />
+              </Field>
+              <div>
+                <div className="mb-1.5 flex items-center gap-1.5 text-sm font-medium">
+                  <Smile className="h-3.5 w-3.5" /> Or an emoji for a portrait
                 </div>
-              </div>
-
-              {avatarMode === 'emoji' ? (
                 <div className="grid grid-cols-10 gap-1">
-                  {EMOJI_CHOICES.map(emoji => (
+                  {EMOJI_CHOICES.map((emoji) => (
                     <button
                       key={emoji}
                       type="button"
-                      onClick={() => setFormData(prev => ({ ...prev, avatar: prev.avatar === emoji ? '' : emoji }))}
+                      aria-label={`Use ${emoji}`}
+                      aria-pressed={form.avatar === emoji}
+                      onClick={() => set('avatar', form.avatar === emoji ? '' : emoji)}
                       className={cn(
-                        'h-8 rounded-md text-lg leading-none transition-all hover:bg-muted hover:scale-110',
-                        formData.avatar === emoji && 'ring-2 ring-primary bg-primary/10'
+                        'h-9 rounded-lg text-lg transition-all hover:scale-110 hover:bg-accent',
+                        form.avatar === emoji && 'bg-primary/15 ring-2 ring-primary'
                       )}
                     >
                       {emoji}
                     </button>
                   ))}
                 </div>
-              ) : (
-                <Input
-                  value={isEmoji(formData.avatar) ? '' : formData.avatar}
-                  onChange={(e) => setFormData(prev => ({ ...prev, avatar: e.target.value }))}
-                  placeholder="https://example.com/avatar.png"
-                  className="text-sm"
-                />
-              )}
-            </div>
-          </div>
-
-          {/* Description */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Personality & background</label>
-            <Textarea
-              value={formData.description}
-              onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
-              placeholder="Who are they? Personality quirks, history, how they speak, what they love or hate..."
-              rows={4}
-              className={cn('resize-none text-sm', errors.description && !formData.systemPrompt && 'border-destructive')}
-            />
-            {errors.description && <p className="text-xs text-destructive">{errors.description}</p>}
-          </div>
-
-          {/* System Prompt */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium flex items-center gap-1.5">
-                System prompt
-                <Badge variant="secondary" className="text-[10px]">advanced</Badge>
-              </label>
-              <span className="text-[11px] text-muted-foreground">~{promptTokens} tokens</span>
-            </div>
-            
-            {!formData.promptTouched && !formData.systemPrompt && (
-              <div className="flex items-start gap-2 text-xs text-muted-foreground bg-primary/5 border border-primary/20 rounded-md p-2.5">
-                <Wand2 className="h-3.5 w-3.5 mt-0.5 shrink-0 text-primary" />
-                <span>Leave empty and we'll build the prompt from the fields above. Edit below to take full control.</span>
+                {form.avatar && !isEmoji(form.avatar) && (
+                  <button type="button" onClick={() => set('avatar', '')} className="mt-2 text-xs text-muted-foreground hover:text-foreground hover:underline">
+                    Remove portrait
+                  </button>
+                )}
               </div>
-            )}
-            
-            <Textarea
-              value={formData.systemPrompt}
-              onChange={(e) => setFormData(prev => ({ ...prev, systemPrompt: e.target.value, promptTouched: true }))}
-              placeholder={composeSystemPrompt(formData.name || 'your character', formData.tagline, formData.description)}
-              rows={7}
-              className="resize-y text-xs font-mono leading-relaxed"
-            />
-          </div>
+              <Field label="Tags" hint="Separate with commas.">
+                <Input value={form.tags} onChange={(e) => set('tags', e.target.value)} placeholder="fantasy, mentor, slow burn" />
+              </Field>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Creator">
+                  <Input value={form.creator} onChange={(e) => set('creator', e.target.value)} />
+                </Field>
+                <Field label="Version">
+                  <Input value={form.characterVersion} onChange={(e) => set('characterVersion', e.target.value)} />
+                </Field>
+              </div>
+              <Field label="Creator's notes" hint="For people reading the card. Never sent to the model.">
+                <Textarea value={form.creatorNotes} onChange={(e) => set('creatorNotes', e.target.value)} rows={3} className="resize-y" />
+              </Field>
+            </>
+          )}
 
-          {/* Greeting */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Opening greeting <span className="text-muted-foreground font-normal">(optional)</span></label>
-            <Textarea
-              value={formData.greeting}
-              onChange={(e) => setFormData(prev => ({ ...prev, greeting: e.target.value }))}
-              placeholder={`What would ${formData.name || 'this character'} say first when you start a chat?`}
-              rows={2}
-              className="resize-none text-sm"
-            />
-          </div>
+          {tab === 'definition' && (
+            <>
+              <p className="text-xs text-muted-foreground">
+                Write <code className="rounded bg-muted px-1">{'{{char}}'}</code> for their name and <code className="rounded bg-muted px-1">{'{{user}}'}</code> for yours.
+              </p>
+              <Field label="Description" hint="Who they are: looks, history, how they speak." tokens={form.description}>
+                <Textarea value={form.description} onChange={(e) => set('description', e.target.value)} rows={9} className="resize-y" />
+              </Field>
+              <Field label="Personality" hint="A short summary of their temperament." tokens={form.personality}>
+                <Textarea value={form.personality} onChange={(e) => set('personality', e.target.value)} rows={3} className="resize-y" />
+              </Field>
+              <Field label="Scenario" hint="Where things stand when the chat begins." tokens={form.scenario}>
+                <Textarea value={form.scenario} onChange={(e) => set('scenario', e.target.value)} rows={3} className="resize-y" />
+              </Field>
+              <Field
+                label="Example dialogue"
+                hint="Teaches their voice. Put <START> before each example."
+                tokens={form.messageExample}
+              >
+                <Textarea
+                  value={form.messageExample}
+                  onChange={(e) => set('messageExample', e.target.value)}
+                  rows={7}
+                  placeholder={'<START>\n{{user}}: Are you sure about this?\n{{char}}: *grins* Not even slightly.'}
+                  className="resize-y font-mono text-xs"
+                />
+              </Field>
+            </>
+          )}
 
-          {/* Memory */}
-          <div className="rounded-lg border p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium flex items-center gap-1.5">
-                <Brain className="h-4 w-4" />
-                Long-term memory
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
+          {tab === 'greetings' && (
+            <>
+              <Field label="First message" hint={`What ${name} opens a chat with.`} tokens={form.greeting}>
+                <Textarea value={form.greeting} onChange={(e) => set('greeting', e.target.value)} rows={6} className="resize-y" />
+              </Field>
+              {alternates.map((text, index) => (
+                <div key={index} className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">Alternate {index + 1}</span>
+                    <button
+                      type="button"
+                      onClick={() => setAlternates((prev) => prev.filter((_, i) => i !== index))}
+                      className="text-muted-foreground hover:text-destructive"
+                      aria-label={`Remove alternate ${index + 1}`}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <Textarea
+                    value={text}
+                    onChange={(e) => setAlternates((prev) => prev.map((value, i) => (i === index ? e.target.value : value)))}
+                    rows={4}
+                    className="resize-y"
+                    aria-label={`Alternate greeting ${index + 1}`}
+                  />
+                </div>
+              ))}
+              <Button type="button" variant="outline" size="sm" onClick={() => setAlternates((prev) => [...prev, ''])}>
+                <Plus className="h-3.5 w-3.5" /> Add an alternate opening
+              </Button>
+              <p className="text-xs text-muted-foreground">Alternates can be swiped through at the start of a chat.</p>
+            </>
+          )}
+
+          {tab === 'advanced' && (
+            <>
+              <Field
+                label="System prompt"
+                hint="Replaces the default instructions. Leave it empty unless the character needs something specific."
+                tokens={form.systemPrompt}
+              >
+                <Textarea value={form.systemPrompt} onChange={(e) => set('systemPrompt', e.target.value)} rows={9} className="resize-y font-mono text-xs" />
+              </Field>
+              <Field
+                label="After-history instructions"
+                hint="Placed after the chat, right where the model is about to write. Good for rules it keeps forgetting."
+                tokens={form.postHistory}
+              >
+                <Textarea value={form.postHistory} onChange={(e) => set('postHistory', e.target.value)} rows={4} className="resize-y font-mono text-xs" />
+              </Field>
+            </>
+          )}
+
+          {tab === 'memory' && (
+            <>
+              <label className="flex items-start gap-3 rounded-xl border p-3">
                 <input
                   type="checkbox"
-                  className="h-4 w-4 accent-primary"
-                  checked={formData.memoryEnabled}
-                  onChange={(e) => setFormData(prev => ({ ...prev, memoryEnabled: e.target.checked }))}
+                  className="mt-1 accent-[var(--primary)]"
+                  checked={form.memoryEnabled}
+                  onChange={(e) => set('memoryEnabled', e.target.checked)}
                 />
-                <span className="text-xs text-muted-foreground">Remember across chats</span>
+                <span>
+                  <span className="flex items-center gap-1.5 text-sm font-medium"><Brain className="h-3.5 w-3.5" /> Remember across chats</span>
+                  <span className="block text-xs text-muted-foreground">
+                    Facts about you are picked up as you talk and carried into every chat with {name}.
+                  </span>
+                </span>
               </label>
-            </div>
 
-            {formData.memoryEnabled && (
-              <p className="text-xs text-muted-foreground">
-                {character
-                  ? `${character.name} will recall these whenever you talk to them. Facts are picked up automatically as you chat.`
-                  : 'Once created, facts about you are remembered here automatically.'}
-              </p>
-            )}
-
-            {character && formData.memoryEnabled && (
-              <>
-                <div className="flex gap-2">
-                  <Input
-                    value={newMemory}
-                    onChange={(e) => setNewMemory(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addMemoryManually() } }}
-                    placeholder="Add a fact manually..."
-                    className="text-sm h-8"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-8 shrink-0"
-                    onClick={addMemoryManually}
-                    disabled={!newMemory.trim()}
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-
-                {memories.length > 0 && (
-                  <ScrollArea className="max-h-40">
-                    <div className="space-y-1.5">
-                      {memories.map(memory => (
-                        <div
-                          key={memory.id}
-                          className="group flex items-start justify-between gap-2 rounded-md border bg-background px-2.5 py-1.5"
-                        >
-                          <span className="text-xs leading-relaxed">{memory.content}</span>
+              {character && form.memoryEnabled ? (
+                <div className="space-y-2">
+                  <div className="flex gap-2">
+                    <Input
+                      value={newMemory}
+                      onChange={(e) => setNewMemory(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          addMemory()
+                        }
+                      }}
+                      placeholder="Add a fact yourself"
+                      className="h-9"
+                    />
+                    <Button type="button" variant="outline" size="icon" className="h-9 w-9 shrink-0" aria-label="Add fact" disabled={!newMemory.trim()} onClick={addMemory}>
+                      <Plus className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  {memories.length === 0 ? (
+                    <p className="py-4 text-center text-xs text-muted-foreground">Nothing yet. Chat with {name} and check back.</p>
+                  ) : (
+                    <ul className="space-y-1.5">
+                      {memories.map((memory) => (
+                        <li key={memory.id} className="group flex items-start justify-between gap-2 rounded-lg bg-muted/60 px-3 py-2 text-sm">
+                          <span>{memory.content}</span>
                           <button
                             type="button"
                             onClick={() => removeMemory(memory.id)}
-                            className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive shrink-0"
-                            title="Forget this"
+                            className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-destructive focus-visible:opacity-100"
+                            aria-label={`Forget: ${memory.content}`}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
-                        </div>
+                        </li>
                       ))}
-                    </div>
-                  </ScrollArea>
-                )}
+                    </ul>
+                  )}
+                </div>
+              ) : (
+                !character && <p className="text-xs text-muted-foreground">Save this character first, then facts can be added here.</p>
+              )}
+            </>
+          )}
+        </div>
 
-                {memories.length === 0 && (
-                  <p className="text-xs italic text-muted-foreground">No memories yet — chat with {character.name} and check back.</p>
-                )}
-              </>
-            )}
-          </div>
-
-          {/* Actions */}
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={onCancel}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={isLoading}>
-              <Save className="h-4 w-4 mr-1.5" />
-              {isLoading ? 'Saving...' : character ? 'Save Changes' : 'Create Character'}
-            </Button>
-          </div>
-        </form>
-      </ScrollArea>
+        <div className="flex items-center justify-end gap-2 border-t p-3">
+          {error && <p className="mr-auto text-xs text-destructive" role="alert">{error}</p>}
+          <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+          <Button size="sm" onClick={handleSave}>
+            <Save className="h-3.5 w-3.5" /> {character ? 'Save changes' : 'Create character'}
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }

@@ -6,6 +6,7 @@ import { execFile } from 'child_process'
 import os from 'os'
 import DatabaseService from './database.js'
 import { ConnectionManager, registerLlmIpc } from './llm/connections.js'
+import { VectorStore, registerVectorIpc } from './vectors.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -138,7 +139,9 @@ function createMenu() {
 function setupDatabase() {
   const db = new DatabaseService();
   setupIpcHandlers(db);
-  registerLlmIpc(ipcMain, new ConnectionManager({ db, safeStorage, fetchImpl: (...args) => net.fetch(...args) }));
+  const connections = new ConnectionManager({ db, safeStorage, fetchImpl: (...args) => net.fetch(...args) });
+  registerLlmIpc(ipcMain, connections);
+  registerVectorIpc(ipcMain, new VectorStore({ db: db.db, connections }));
 }
 
 function setupIpcHandlers(db) {
@@ -176,6 +179,11 @@ function setupIpcHandlers(db) {
   ipcMain.handle('db:getAllMemories', async () => db.getAllMemories());
   ipcMain.handle('db:updateMemory', async (event, memoryId, updates) => db.updateMemory(memoryId, updates));
   ipcMain.handle('db:deleteMemory', async (event, memoryId) => db.deleteMemory(memoryId));
+
+  // Persona operations
+  ipcMain.handle('db:getAllPersonas', async () => db.getAllPersonas());
+  ipcMain.handle('db:savePersona', async (event, persona) => db.savePersona(persona));
+  ipcMain.handle('db:deletePersona', async (event, personaId) => db.deletePersona(personaId));
 
   // Export/Import operations
   ipcMain.handle('db:exportSessions', async () => db.exportSessions());

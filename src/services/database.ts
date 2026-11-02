@@ -1,4 +1,4 @@
-import type { ChatSession, ChatMessage, Character, CharacterMemory, SavedScript, ScriptExecutionResult } from '../types/chat'
+import type { ChatSession, ChatMessage, Character, CharacterMemory, Persona, SavedScript, ScriptExecutionResult } from '../types/chat'
 
 // Helper to ensure we're running inside Electron renderer
 const getElectronDB = () => {
@@ -183,6 +183,19 @@ export class DatabaseService {
     const memories: CharacterMemory[] = JSON.parse(localStorage.getItem('characterMemories') || '[]')
     localStorage.setItem('characterMemories', JSON.stringify(memories.filter(m => m.id !== memoryId)))
     return true
+  }
+
+  // Persona operations
+  async getAllPersonas(): Promise<Persona[]> {
+    return this.api.getAllPersonas()
+  }
+
+  async savePersona(persona: Persona): Promise<string> {
+    return this.api.savePersona(persona)
+  }
+
+  async deletePersona(personaId: string): Promise<boolean> {
+    return this.api.deletePersona(personaId)
   }
 
   // Export/Import operations

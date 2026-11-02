@@ -3,6 +3,7 @@ import type {
   AIProvider,
   ChatMessage,
   ConnectionInput,
+  GenerationParams,
   LLMChatEvent,
   LLMConnection,
   LLMResult,
@@ -67,11 +68,18 @@ export class LLMService {
     return { ok: true, models: result.models.map((model) => ({ ...model, provider: id })) }
   }
 
+  static async listEmbeddingModels(id: AIProvider): Promise<LLMResult<{ models: AIModel[] }>> {
+    const result = await getApi().listEmbeddingModels(id)
+    if (!result.ok) return result
+    return { ok: true, models: result.models.map((model) => ({ ...model, provider: id })) }
+  }
+
   static async *chatStream(
     connectionId: AIProvider,
     model: string,
     messages: Array<Pick<ChatMessage, 'role' | 'content'>>,
-    signal: AbortSignal
+    signal: AbortSignal,
+    params?: Partial<GenerationParams>
   ): AsyncGenerator<string, void, unknown> {
     const api = getApi()
     const requestId = crypto.randomUUID()
@@ -89,7 +97,7 @@ export class LLMService {
     signal.addEventListener('abort', onAbort, { once: true })
 
     try {
-      await api.startChat(requestId, { connectionId, model, messages })
+      await api.startChat(requestId, { connectionId, model, messages, params })
       while (true) {
         if (queue.length === 0) {
           await new Promise<void>((resolve) => {
@@ -109,4 +117,18 @@ export class LLMService {
       unsubscribe()
     }
   }
+}
+
+// Collects a whole reply, for background jobs like summaries
+export async function completeChat(
+  connectionId: AIProvider,
+  model: string,
+  messages: Array<Pick<ChatMessage, 'role' | 'content'>>,
+  params?: Partial<GenerationParams>
+): Promise<string> {
+  let text = ''
+  for await (const chunk of LLMService.chatStream(connectionId, model, messages, new AbortController().signal, params)) {
+    text += chunk
+  }
+  return text
 }

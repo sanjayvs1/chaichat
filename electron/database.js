@@ -8,6 +8,60 @@ import crypto from 'crypto'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
+const CHARACTER_SELECT = `
+  id, name, tagline, description, system_prompt as systemPrompt, greeting, avatar,
+  personality, scenario, message_example as messageExample,
+  alternate_greetings as alternateGreetingsRaw, post_history as postHistory,
+  creator, creator_notes as creatorNotes, character_version as characterVersion,
+  tags as tagsRaw, favorite, card_extras as cardExtras,
+  memory_enabled as memoryEnabled, is_default as isDefault,
+  created_at as createdAt, updated_at as updatedAt
+`
+
+const MESSAGE_SELECT = `
+  id, role, content, timestamp, character_id as characterId,
+  target_character_id as targetId, swipes as swipesRaw, swipe_index as swipeIndex
+`
+
+const parseStringList = (raw) => {
+  if (!raw) return undefined
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed.map(String) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+const toCharacter = ({ alternateGreetingsRaw, tagsRaw, ...row }) => ({
+  ...row,
+  systemPrompt: row.systemPrompt || undefined,
+  greeting: row.greeting || undefined,
+  tagline: row.tagline || undefined,
+  personality: row.personality || undefined,
+  scenario: row.scenario || undefined,
+  messageExample: row.messageExample || undefined,
+  alternateGreetings: parseStringList(alternateGreetingsRaw),
+  postHistory: row.postHistory || undefined,
+  creator: row.creator || undefined,
+  creatorNotes: row.creatorNotes || undefined,
+  characterVersion: row.characterVersion || undefined,
+  tags: parseStringList(tagsRaw),
+  favorite: Boolean(row.favorite),
+  cardExtras: row.cardExtras || undefined,
+  memoryEnabled: row.memoryEnabled === null ? true : Boolean(row.memoryEnabled),
+  isDefault: Boolean(row.isDefault)
+})
+
+const toMessage = ({ swipesRaw, ...row }) => ({
+  ...row,
+  timestamp: new Date(row.timestamp),
+  characterId: row.characterId || undefined,
+  targetId: row.targetId || undefined,
+  swipes: parseStringList(swipesRaw),
+  swipeIndex: row.swipeIndex ?? undefined
+})
+
 class DatabaseService {
   constructor() {
     this.db = null
@@ -180,6 +234,30 @@ class DatabaseService {
       console.log('Migration completed');
     }
 
+    this.ensureColumns('characters', {
+      personality: 'TEXT',
+      scenario: 'TEXT',
+      message_example: 'TEXT',
+      alternate_greetings: 'TEXT',
+      post_history: 'TEXT',
+      creator: 'TEXT',
+      creator_notes: 'TEXT',
+      character_version: 'TEXT',
+      tags: 'TEXT',
+      favorite: 'INTEGER DEFAULT 0',
+      card_extras: 'TEXT'
+    })
+    this.ensureColumns('sessions', {
+      summary: 'TEXT',
+      summary_through_id: 'TEXT',
+      author_note: 'TEXT',
+      persona_id: 'TEXT'
+    })
+    this.ensureColumns('messages', {
+      swipes: 'TEXT',
+      swipe_index: 'INTEGER'
+    })
+
     // Create indexes for better performance
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages (session_id);
@@ -253,8 +331,44 @@ class DatabaseService {
       )
     `)
 
+    // Who the user plays as. The active one lives in settings, a chat can override it.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS personas (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        avatar TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `)
+
+    // One vector per message and embedding model, see vectors.js
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS message_embeddings (
+        message_id TEXT NOT NULL,
+        model_key TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        vector BLOB NOT NULL,
+        PRIMARY KEY (message_id, model_key),
+        FOREIGN KEY (message_id) REFERENCES messages (id) ON DELETE CASCADE,
+        FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
+      )
+    `)
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_message_embeddings_session ON message_embeddings (session_id, model_key);
+    `)
+
     // Initialize default characters if none exist
     this.initializeDefaultCharacters()
+  }
+
+  ensureColumns(table, columns) {
+    const existing = new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map((col) => col.name))
+    for (const [name, type] of Object.entries(columns)) {
+      if (!existing.has(name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`)
+    }
   }
 
   initializeDefaultCharacters() {
@@ -372,8 +486,9 @@ Roleplay guidelines:
   // Session operations
   createSession(session) {
     const stmt = this.db.prepare(`
-      INSERT INTO sessions (id, title, created_at, updated_at, character_id, participant_ids, provider, selected_model)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO sessions (id, title, created_at, updated_at, character_id, participant_ids, provider, selected_model,
+                            summary, summary_through_id, author_note, persona_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     
     try {
@@ -385,9 +500,13 @@ Roleplay guidelines:
         session.characterId || null,
         session.participantIds ? JSON.stringify(session.participantIds) : null,
         session.provider || null,
-        session.selectedModel || null
+        session.selectedModel || null,
+        session.summary || null,
+        session.summaryThroughId || null,
+        session.authorNote || null,
+        session.personaId || null
       )
-      
+
       // Insert messages for this session
       if (session.messages && session.messages.length > 0) {
         this.addMessages(session.id, session.messages)
@@ -410,12 +529,30 @@ Roleplay guidelines:
     }
   }
 
+  toSession(row, messages) {
+    return {
+      ...row,
+      participantIdsRaw: undefined,
+      characterId: row.characterId || undefined,
+      participantIds: this.parseParticipantIds(row.participantIdsRaw),
+      provider: row.provider || undefined,
+      selectedModel: row.selectedModel || undefined,
+      summary: row.summary || undefined,
+      summaryThroughId: row.summaryThroughId || undefined,
+      authorNote: row.authorNote || undefined,
+      personaId: row.personaId || undefined,
+      messages
+    }
+  }
+
   getAllSessions() {
     try {
       const sessionsStmt = this.db.prepare(`
         SELECT id, title, created_at as createdAt, updated_at as updatedAt, 
                character_id as characterId, participant_ids as participantIdsRaw,
-               provider, selected_model as selectedModel
+               provider, selected_model as selectedModel,
+               summary, summary_through_id as summaryThroughId,
+               author_note as authorNote, persona_id as personaId
         FROM sessions
         ORDER BY updated_at DESC
       `)
@@ -424,26 +561,13 @@ Roleplay guidelines:
       
       // Get messages for each session (include character_id/target for multi-character support)
       const messagesStmt = this.db.prepare(`
-        SELECT id, role, content, timestamp, character_id as characterId, target_character_id as targetId
+        SELECT ${MESSAGE_SELECT}
         FROM messages
         WHERE session_id = ?
         ORDER BY timestamp ASC
       `)
-      
-      return sessions.map(session => ({
-        ...session,
-        participantIdsRaw: undefined,
-        characterId: session.characterId || undefined,
-        participantIds: this.parseParticipantIds(session.participantIdsRaw),
-        provider: session.provider || undefined,
-        selectedModel: session.selectedModel || undefined,
-        messages: messagesStmt.all(session.id).map(msg => ({
-          ...msg,
-          timestamp: new Date(msg.timestamp),
-          characterId: msg.characterId || undefined,
-          targetId: msg.targetId || undefined,
-        }))
-      }))
+
+      return sessions.map(session => this.toSession(session, messagesStmt.all(session.id).map(toMessage)))
     } catch (error) {
       console.error('Error getting sessions:', error)
       throw error
@@ -455,7 +579,9 @@ Roleplay guidelines:
       const sessionStmt = this.db.prepare(`
         SELECT id, title, created_at as createdAt, updated_at as updatedAt, 
                character_id as characterId, participant_ids as participantIdsRaw,
-               provider, selected_model as selectedModel
+               provider, selected_model as selectedModel,
+               summary, summary_through_id as summaryThroughId,
+               author_note as authorNote, persona_id as personaId
         FROM sessions
         WHERE id = ?
       `)
@@ -463,29 +589,14 @@ Roleplay guidelines:
       const session = sessionStmt.get(sessionId)
       if (!session) return null
       
-    const messagesStmt = this.db.prepare(`
-        SELECT id, role, content, timestamp, character_id as characterId, target_character_id as targetId
+      const messagesStmt = this.db.prepare(`
+        SELECT ${MESSAGE_SELECT}
         FROM messages
         WHERE session_id = ?
         ORDER BY timestamp ASC
       `)
-      
-      const messages = messagesStmt.all(sessionId).map(msg => ({
-        ...msg,
-        timestamp: new Date(msg.timestamp),
-        characterId: msg.characterId || undefined,
-        targetId: msg.targetId || undefined
-      }))
-      
-      return { 
-        ...session, 
-        participantIdsRaw: undefined,
-        characterId: session.characterId || undefined,
-        participantIds: this.parseParticipantIds(session.participantIdsRaw),
-        provider: session.provider || undefined,
-        selectedModel: session.selectedModel || undefined,
-        messages 
-      }
+
+      return this.toSession(session, messagesStmt.all(sessionId).map(toMessage))
     } catch (error) {
       console.error('Error getting session:', error)
       throw error
@@ -504,7 +615,7 @@ Roleplay guidelines:
       
       if (updates.characterId !== undefined) {
         fields.push('character_id = ?')
-        values.push(updates.characterId)
+        values.push(updates.characterId || null)
       }
       
       if (updates.participantIds !== undefined) {
@@ -521,7 +632,27 @@ Roleplay guidelines:
         fields.push('selected_model = ?')
         values.push(updates.selectedModel)
       }
-      
+
+      if (updates.summary !== undefined) {
+        fields.push('summary = ?')
+        values.push(updates.summary)
+      }
+
+      if (updates.summaryThroughId !== undefined) {
+        fields.push('summary_through_id = ?')
+        values.push(updates.summaryThroughId)
+      }
+
+      if (updates.authorNote !== undefined) {
+        fields.push('author_note = ?')
+        values.push(updates.authorNote)
+      }
+
+      if (updates.personaId !== undefined) {
+        fields.push('persona_id = ?')
+        values.push(updates.personaId)
+      }
+
       fields.push('updated_at = ?')
       values.push(new Date().toISOString())
       values.push(sessionId)
@@ -562,7 +693,15 @@ Roleplay guidelines:
         // Preserve the cast of characters on duplicate
         characterId: session.characterId || null,
         participantIds: session.participantIds || (session.characterId ? [session.characterId] : undefined),
-        messages: session.messages
+        summary: session.summary,
+        authorNote: session.authorNote,
+        personaId: session.personaId,
+        // Message ids are primary keys, so the copy needs its own
+        messages: session.messages.map((message) => ({ ...message, id: crypto.randomUUID() }))
+      }
+      if (session.summaryThroughId) {
+        const index = session.messages.findIndex((message) => message.id === session.summaryThroughId)
+        if (index !== -1) newSession.summaryThroughId = newSession.messages[index].id
       }
       
       this.createSession(newSession)
@@ -577,8 +716,8 @@ Roleplay guidelines:
   addMessages(sessionId, messages) {
     try {
       const stmt = this.db.prepare(`
-        INSERT OR IGNORE INTO messages (id, session_id, role, content, timestamp, character_id, target_character_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO messages (id, session_id, role, content, timestamp, character_id, target_character_id, swipes, swipe_index)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       
       const transaction = this.db.transaction((msgs) => {
@@ -588,9 +727,11 @@ Roleplay guidelines:
             sessionId,
             message.role,
             message.content,
-            message.timestamp.toISOString(),
+            new Date(message.timestamp).toISOString(),
             message.characterId || null,
-            message.targetId || null
+            message.targetId || null,
+            message.swipes?.length ? JSON.stringify(message.swipes) : null,
+            message.swipeIndex ?? null
           )
         }
       })
@@ -619,14 +760,24 @@ Roleplay guidelines:
       
       if (updates.characterId !== undefined) {
         fields.push('character_id = ?')
-        values.push(updates.characterId)
+        values.push(updates.characterId || null)
       }
 
       if (updates.targetId !== undefined) {
         fields.push('target_character_id = ?')
         values.push(updates.targetId)
       }
-      
+
+      if (updates.swipes !== undefined) {
+        fields.push('swipes = ?')
+        values.push(updates.swipes?.length ? JSON.stringify(updates.swipes) : null)
+      }
+
+      if (updates.swipeIndex !== undefined) {
+        fields.push('swipe_index = ?')
+        values.push(updates.swipeIndex)
+      }
+
       if (fields.length === 0) return false
       
       values.push(messageId)
@@ -813,10 +964,12 @@ Roleplay guidelines:
   createCharacter(character) {
     try {
       const stmt = this.db.prepare(`
-        INSERT INTO characters (id, name, tagline, description, system_prompt, greeting, avatar, memory_enabled, is_default, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO characters (id, name, tagline, description, system_prompt, greeting, avatar, memory_enabled, is_default, created_at, updated_at,
+                                personality, scenario, message_example, alternate_greetings, post_history,
+                                creator, creator_notes, character_version, tags, favorite, card_extras)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      
+
       stmt.run(
         character.id,
         character.name,
@@ -828,9 +981,20 @@ Roleplay guidelines:
         character.memoryEnabled === false ? 0 : 1,
         character.isDefault ? 1 : 0,
         character.createdAt,
-        character.updatedAt
+        character.updatedAt,
+        character.personality || null,
+        character.scenario || null,
+        character.messageExample || null,
+        character.alternateGreetings?.length ? JSON.stringify(character.alternateGreetings) : null,
+        character.postHistory || null,
+        character.creator || null,
+        character.creatorNotes || null,
+        character.characterVersion || null,
+        character.tags?.length ? JSON.stringify(character.tags) : null,
+        character.favorite ? 1 : 0,
+        character.cardExtras || null
       )
-      
+
       return character.id
     } catch (error) {
       console.error('Error creating character:', error)
@@ -841,22 +1005,12 @@ Roleplay guidelines:
   getAllCharacters() {
     try {
       const stmt = this.db.prepare(`
-        SELECT id, name, tagline, description, system_prompt as systemPrompt, greeting, avatar,
-               memory_enabled as memoryEnabled, is_default as isDefault, 
-               created_at as createdAt, updated_at as updatedAt
+        SELECT ${CHARACTER_SELECT}
         FROM characters
         ORDER BY is_default DESC, name ASC
       `)
-      
-      const characters = stmt.all()
-      return characters.map(char => ({
-        ...char,
-        systemPrompt: char.systemPrompt || undefined,
-        greeting: char.greeting || undefined,
-        tagline: char.tagline || undefined,
-        memoryEnabled: char.memoryEnabled === null ? true : Boolean(char.memoryEnabled),
-        isDefault: Boolean(char.isDefault)
-      }))
+
+      return stmt.all().map(toCharacter)
     } catch (error) {
       console.error('Error getting characters:', error)
       throw error
@@ -866,24 +1020,13 @@ Roleplay guidelines:
   getCharacter(characterId) {
     try {
       const stmt = this.db.prepare(`
-        SELECT id, name, tagline, description, system_prompt as systemPrompt, greeting, avatar,
-               memory_enabled as memoryEnabled, is_default as isDefault, 
-               created_at as createdAt, updated_at as updatedAt
+        SELECT ${CHARACTER_SELECT}
         FROM characters
         WHERE id = ?
       `)
       
       const character = stmt.get(characterId)
-      if (!character) return null
-      
-      return {
-        ...character,
-        systemPrompt: character.systemPrompt || undefined,
-        greeting: character.greeting || undefined,
-        tagline: character.tagline || undefined,
-        memoryEnabled: character.memoryEnabled === null ? true : Boolean(character.memoryEnabled),
-        isDefault: Boolean(character.isDefault)
-      }
+      return character ? toCharacter(character) : null
     } catch (error) {
       console.error('Error getting character:', error)
       throw error
@@ -927,7 +1070,35 @@ Roleplay guidelines:
         fields.push('is_default = ?')
         values.push(updates.isDefault ? 1 : 0)
       }
-      
+      if (updates.favorite !== undefined) {
+        fields.push('favorite = ?')
+        values.push(updates.favorite ? 1 : 0)
+      }
+      for (const [key, column] of [
+        ['personality', 'personality'],
+        ['scenario', 'scenario'],
+        ['messageExample', 'message_example'],
+        ['postHistory', 'post_history'],
+        ['creator', 'creator'],
+        ['creatorNotes', 'creator_notes'],
+        ['characterVersion', 'character_version'],
+        ['cardExtras', 'card_extras']
+      ]) {
+        if (updates[key] !== undefined) {
+          fields.push(`${column} = ?`)
+          values.push(updates[key])
+        }
+      }
+      for (const [key, column] of [
+        ['alternateGreetings', 'alternate_greetings'],
+        ['tags', 'tags']
+      ]) {
+        if (updates[key] !== undefined) {
+          fields.push(`${column} = ?`)
+          values.push(updates[key]?.length ? JSON.stringify(updates[key]) : null)
+        }
+      }
+
       fields.push('updated_at = ?')
       values.push(new Date().toISOString())
       values.push(characterId)
@@ -981,25 +1152,14 @@ Roleplay guidelines:
   searchCharacters(query) {
     try {
       const stmt = this.db.prepare(`
-        SELECT id, name, tagline, description, system_prompt as systemPrompt, greeting, avatar,
-               memory_enabled as memoryEnabled, is_default as isDefault,
-               created_at as createdAt, updated_at as updatedAt
+        SELECT ${CHARACTER_SELECT}
         FROM characters
         WHERE name LIKE ? OR description LIKE ? OR IFNULL(tagline, '') LIKE ?
         ORDER BY is_default DESC, name ASC
       `)
       
       const searchTerm = `%${query}%`
-      const characters = stmt.all(searchTerm, searchTerm, searchTerm)
-      
-      return characters.map(char => ({
-        ...char,
-        systemPrompt: char.systemPrompt || undefined,
-        greeting: char.greeting || undefined,
-        tagline: char.tagline || undefined,
-        memoryEnabled: char.memoryEnabled === null ? true : Boolean(char.memoryEnabled),
-        isDefault: Boolean(char.isDefault)
-      }))
+      return stmt.all(searchTerm, searchTerm, searchTerm).map(toCharacter)
     } catch (error) {
       console.error('Error searching characters:', error)
       throw error
@@ -1096,6 +1256,54 @@ Roleplay guidelines:
     }
   }
 
+  // Persona operations
+  getAllPersonas() {
+    try {
+      return this.db.prepare(`
+        SELECT id, name, description, avatar, created_at as createdAt, updated_at as updatedAt
+        FROM personas
+        ORDER BY created_at ASC
+      `).all().map((persona) => ({
+        ...persona,
+        description: persona.description || '',
+        avatar: persona.avatar || undefined
+      }))
+    } catch (error) {
+      console.error('Error getting personas:', error)
+      throw error
+    }
+  }
+
+  savePersona(persona) {
+    try {
+      this.db.prepare(`
+        INSERT OR REPLACE INTO personas (id, name, description, avatar, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        persona.id,
+        persona.name,
+        persona.description || null,
+        persona.avatar || null,
+        persona.createdAt,
+        new Date().toISOString()
+      )
+      return persona.id
+    } catch (error) {
+      console.error('Error saving persona:', error)
+      throw error
+    }
+  }
+
+  deletePersona(personaId) {
+    try {
+      this.db.prepare('UPDATE sessions SET persona_id = NULL WHERE persona_id = ?').run(personaId)
+      return this.db.prepare('DELETE FROM personas WHERE id = ?').run(personaId).changes > 0
+    } catch (error) {
+      console.error('Error deleting persona:', error)
+      throw error
+    }
+  }
+
   // Export/Import operations
   exportSessions() {
     try {
@@ -1105,7 +1313,8 @@ Roleplay guidelines:
         exportDate: new Date().toISOString(),
         sessions: sessions,
         characters: this.getAllCharacters(),
-        memories: this.getAllMemories()
+        memories: this.getAllMemories(),
+        personas: this.getAllPersonas()
       }
     } catch (error) {
       console.error('Error exporting sessions:', error)
@@ -1128,6 +1337,13 @@ Roleplay guidelines:
             if (!existing) {
               this.createCharacter(character)
             }
+          }
+        }
+
+        if (Array.isArray(data.personas)) {
+          const known = new Set(this.getAllPersonas().map((persona) => persona.id))
+          for (const persona of data.personas) {
+            if (!known.has(persona.id)) this.savePersona(persona)
           }
         }
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo, startTransition } from "react";
 import type {
+  AppSettings,
   ChatMessage,
   ChatSession,
   Character,
@@ -7,8 +8,13 @@ import type {
   AIModel,
   ConnectionPreset,
   LLMConnection,
+  Persona,
+  PromptReport,
   ProviderStatus,
 } from "../types/chat";
+import { DEFAULT_SETTINGS, parseSettings } from "../lib/settings";
+import { resolveUserName } from "../lib/prompt";
+import { importCharacterFile } from "../lib/cards";
 import { dbService } from "../services/database";
 import { LLMService } from "../services/llm";
 
@@ -26,10 +32,16 @@ import {
 } from "./sessionHandlers";
 
 import {
-  sendMessageHandler,
+  assemblePrompt,
+  generateHandler,
+  impersonateHandler,
   searchChatsHandler,
   stopGenerationHandler,
+  type GenerationContext,
+  type GenerationRequest,
 } from "./messageHandlers";
+
+import { shouldSummarize, summarizeChat, unsummarizedCount } from "./memoryHandlers";
 
 import {
   loadCharactersHandler,
@@ -80,7 +92,16 @@ export function useChat() {
   const [activeTargetId, setActiveTargetId] = useState<string | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const [chatSummary, setChatSummary] = useState<string>("");
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [personas, setPersonas] = useState<Persona[]>([]);
+  // Every character replies to the next message
+  const [replyAll, setReplyAll] = useState(false);
+  // The prompt behind the latest reply, for the context meter and prompt inspector
+  const [lastPrompt, setLastPrompt] = useState<PromptReport | null>(null);
+  // Streams the impersonated draft into the composer
+  const [impersonation, setImpersonation] = useState<{ text: string } | null>(null);
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
   // Flag to suppress autosave during session switches/initial load
   const isSwitchingSessionRef = useRef<boolean>(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -139,6 +160,15 @@ export function useChat() {
         .filter((c): c is Character => !!c),
     [participantIds, characters]
   );
+
+  const persona = useMemo(
+    () => personas.find((p) => p.id === (currentSession?.personaId ?? settings.personaId)),
+    [personas, currentSession?.personaId, settings.personaId]
+  );
+
+  // Always-fresh session for async handlers
+  const currentSessionRef = useRef(currentSession);
+  currentSessionRef.current = currentSession;
 
   // Cache for session message signatures to avoid repeated JSON.stringify calls
   const sessionSignatureCache = useRef<Map<string, string>>(new Map());
@@ -199,6 +229,9 @@ export function useChat() {
           setCurrentSessionId(newSession.id);
           setMessages([]);
         }
+
+        setSettings(parseSettings(await dbService.getSetting("appSettings")));
+        setPersonas(await dbService.getAllPersonas());
 
         // Load system prompt from database
         const dbSystemPrompt = await dbService.getSetting("systemPrompt");
@@ -267,7 +300,9 @@ export function useChat() {
             existingMessage.content !== m.content ||
             existingMessage.timestamp.getTime() !== m.timestamp.getTime() ||
             existingMessage.characterId !== m.characterId ||
-            existingMessage.targetId !== m.targetId
+            existingMessage.targetId !== m.targetId ||
+            existingMessage.swipeIndex !== m.swipeIndex ||
+            JSON.stringify(existingMessage.swipes) !== JSON.stringify(m.swipes)
           );
         });
 
@@ -288,6 +323,8 @@ export function useChat() {
             if (existingMessage.timestamp.getTime() !== message.timestamp.getTime()) updates.timestamp = message.timestamp;
             if (existingMessage.characterId !== message.characterId) updates.characterId = message.characterId;
             if (existingMessage.targetId !== message.targetId) updates.targetId = message.targetId;
+            if (existingMessage.swipeIndex !== message.swipeIndex) updates.swipeIndex = message.swipeIndex;
+            if (JSON.stringify(existingMessage.swipes) !== JSON.stringify(message.swipes)) updates.swipes = message.swipes;
 
             if (Object.keys(updates).length > 0) {
               await dbService.updateMessage(message.id, updates);
@@ -442,48 +479,189 @@ export function useChat() {
   const getProviderName = () =>
     connectionsRef.current.find((c) => c.id === selectedProviderRef.current)?.name ?? "This connection";
 
-  // Message handler
-  const sendMessage = useCallback(
-    async (content: string, options?: { askAll?: boolean; continueLast?: boolean }) => {
-      const askAll = options?.askAll ?? false;
-      const continueLast = options?.continueLast ?? false;
-      const targets = askAll ? participants : activeTarget ? [activeTarget] : [];
-      rememberSelection(selectedProvider, selectedModel);
-
-      await sendMessageHandler(
-        content,
-        {
-          selectedModel,
-          selectedProvider,
-          providerName: getProviderName(),
-          isLoading,
-          currentSessionId,
-          getMessages: () => messagesRef.current,
-          systemPrompt,
-          targets,
-          providerStatus,
-          setIsLoading,
-          setError,
-          setMessages,
-          setSessions,
-          abortControllerRef
-        },
-        continueLast
-          ? { skipUserMessage: true, continueNudge: "(Continue your previous response from exactly where it stopped. Do not repeat anything, do not add preamble — continue seamlessly.)" }
-          : {}
-      );
+  const updateCurrentSession = useCallback(
+    async (updates: Partial<ChatSession>) => {
+      if (!currentSessionId) return;
+      setSessions((prev) => prev.map((s) => (s.id === currentSessionId ? { ...s, ...updates } : s)));
+      try {
+        await dbService.updateSession(currentSessionId, updates);
+      } catch (err) {
+        console.error("Failed to update session:", err);
+      }
     },
-    [
+    [currentSessionId]
+  );
+
+  const generationContext = useCallback(
+    (messagesOverride?: ChatMessage[]): GenerationContext => ({
       selectedModel,
       selectedProvider,
+      providerName: getProviderName(),
       isLoading,
-      systemPrompt,
-      activeTarget,
-      participants,
       currentSessionId,
+      getMessages: () => messagesOverride ?? messagesRef.current,
+      getSession: () => currentSessionRef.current,
+      systemPrompt,
+      settings,
+      persona,
+      characters,
+      groupNames: participants.map((p) => p.name),
       providerStatus,
-    ]
+      setIsLoading,
+      setError,
+      setMemoryError,
+      setMessages,
+      setSessions,
+      setLastPrompt,
+      abortControllerRef,
+    }),
+    [selectedModel, selectedProvider, isLoading, currentSessionId, systemPrompt, settings, persona, characters, participants, providerStatus]
   );
+
+  // Writes the older part of the chat into the rolling summary
+  const summarizeNow = useCallback(
+    async (messagesOverride?: ChatMessage[]) => {
+      const session = currentSessionRef.current;
+      if (!session || !selectedModel) return;
+      setIsSummarizing(true);
+      setMemoryError(null);
+      try {
+        const result = await summarizeChat({
+          messages: messagesOverride ?? messagesRef.current,
+          summary: session.summary,
+          summaryThroughId: session.summaryThroughId,
+          settings: settings.summary,
+          characters,
+          userName: resolveUserName(persona),
+          provider: selectedProvider,
+          model: selectedModel,
+        });
+        if (result) await updateCurrentSession(result);
+      } catch (err) {
+        setMemoryError(err instanceof Error ? err.message : "Summarizing failed");
+      } finally {
+        setIsSummarizing(false);
+      }
+    },
+    [selectedModel, selectedProvider, settings.summary, characters, persona, updateCurrentSession]
+  );
+
+  const generate = useCallback(
+    async (request: GenerationRequest, messagesOverride?: ChatMessage[]) => {
+      rememberSelection(selectedProvider, selectedModel);
+      await generateHandler(request, generationContext(messagesOverride));
+
+      // Summarize once the chat has settled, so it never competes with the reply
+      setTimeout(() => {
+        const session = currentSessionRef.current;
+        if (shouldSummarize(messagesRef.current, session?.summaryThroughId, settings.summary)) {
+          summarizeNow();
+        }
+      }, 500);
+    },
+    [selectedProvider, selectedModel, generationContext, settings.summary, summarizeNow]
+  );
+
+  // Who the last message came from, which is who a rewrite has to speak as
+  const lastSpeaker = useCallback(() => {
+    const last = messagesRef.current[messagesRef.current.length - 1];
+    return characters.find((c) => c.id === last?.characterId);
+  }, [characters]);
+
+  const sendMessage = useCallback(
+    async (content: string) => {
+      const everyone = replyAll && participants.length > 1;
+      const targets = everyone ? participants : activeTarget ? [activeTarget] : [];
+      await generate({ mode: "send", content, targets, broadcast: everyone });
+    },
+    [generate, replyAll, participants, activeTarget]
+  );
+
+  const regenerate = useCallback(async () => {
+    await generate({ mode: "regenerate", target: lastSpeaker() });
+  }, [generate, lastSpeaker]);
+
+  const impersonate = useCallback(async () => {
+    setImpersonation({ text: "" });
+    await impersonateHandler(activeTarget, generationContext(), (text) => setImpersonation({ text }));
+  }, [activeTarget, generationContext]);
+
+  // Shows the alternate version of a message, past the last one writes a new version
+  const swipeMessage = useCallback(
+    async (messageId: string, direction: -1 | 1) => {
+      const current = messagesRef.current;
+      const message = current.find((m) => m.id === messageId);
+      if (!message?.swipes && direction === -1) return;
+
+      const versions = message?.swipes ?? [message?.content ?? ""];
+      const nextIndex = (message?.swipeIndex ?? 0) + direction;
+      if (nextIndex < 0) return;
+      if (nextIndex >= versions.length) {
+        if (current[current.length - 1]?.id === messageId) await regenerate();
+        return;
+      }
+      setMessages((prev) =>
+        prev.map((m) => (m.id === messageId ? { ...m, swipeIndex: nextIndex, content: versions[nextIndex] } : m))
+      );
+    },
+    [regenerate]
+  );
+
+  const deleteMessage = useCallback(
+    async (messageId: string) => {
+      const current = messagesRef.current;
+      const index = current.findIndex((m) => m.id === messageId);
+      if (index === -1) return;
+
+      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+      try {
+        await dbService.deleteMessages([messageId]);
+      } catch (err) {
+        console.error("Failed to delete message:", err);
+      }
+      if (currentSessionRef.current?.summaryThroughId === messageId) {
+        await updateCurrentSession({ summaryThroughId: current[index - 1]?.id ?? "" });
+      }
+    },
+    [updateCurrentSession]
+  );
+
+  const updateSettings = useCallback((update: (previous: AppSettings) => AppSettings) => {
+    setSettings((previous) => {
+      const next = update(previous);
+      dbService.setSetting("appSettings", JSON.stringify(next)).catch((err) => {
+        console.error("Failed to save settings:", err);
+      });
+      return next;
+    });
+  }, []);
+
+  const savePersona = useCallback(async (next: Persona) => {
+    await dbService.savePersona(next);
+    setPersonas((prev) =>
+      prev.some((p) => p.id === next.id) ? prev.map((p) => (p.id === next.id ? next : p)) : [...prev, next]
+    );
+  }, []);
+
+  const deletePersona = useCallback(
+    async (personaId: string) => {
+      await dbService.deletePersona(personaId);
+      setPersonas((prev) => prev.filter((p) => p.id !== personaId));
+      setSessions((prev) =>
+        prev.map((s) => (s.personaId === personaId ? { ...s, personaId: undefined } : s))
+      );
+      updateSettings((previous) =>
+        previous.personaId === personaId ? { ...previous, personaId: null } : previous
+      );
+    },
+    [updateSettings]
+  );
+
+  // What the next prompt would look like, for the inspector before anything was sent
+  const previewPrompt = useCallback(async () => {
+    const report = await assemblePrompt(generationContext(), activeTarget, messagesRef.current);
+    setLastPrompt(report);
+  }, [generationContext, activeTarget]);
 
   // Truncate the conversation after `messageId` (state + DB) and return the kept slice
   const truncateAfterMessage = useCallback(
@@ -513,17 +691,24 @@ export function useChat() {
     [currentSessionId]
   );
 
-  // Edit a user message; optionally truncate everything after it and regenerate the response
-  const editUserMessage = useCallback(
+  // Edit a message; for user messages, optionally truncate everything after it and regenerate
+  const editMessage = useCallback(
     async (messageId: string, newContent: string, resend: boolean) => {
       const current = messagesRef.current;
       const idx = current.findIndex((m) => m.id === messageId);
       if (idx === -1) return;
 
-      // Update content in state and DB
-      setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, content: newContent } : m)));
+      // An edit changes the version on screen and leaves the other swipes alone
+      const edited = (m: ChatMessage): ChatMessage => ({
+        ...m,
+        content: newContent,
+        swipes: m.swipes?.map((version, i) => (i === (m.swipeIndex ?? 0) ? newContent : version)),
+      });
+      const updated = edited(current[idx]);
+
+      setMessages((prev) => prev.map((m) => (m.id === messageId ? edited(m) : m)));
       try {
-        await dbService.updateMessage(messageId, { content: newContent });
+        await dbService.updateMessage(messageId, { content: newContent, swipes: updated.swipes });
       } catch (err) {
         console.error("Failed to update message:", err);
       }
@@ -539,31 +724,14 @@ export function useChat() {
 
       // Drop everything after this message, then regenerate from the edited text
       const kept = await truncateAfterMessage(messageId);
-      const target = activeTarget;
-      const targets = target ? [target] : [];
-      rememberSelection(selectedProvider, selectedModel);
-      await sendMessageHandler(
-        newContent,
-        {
-          selectedModel,
-          selectedProvider,
-          providerName: getProviderName(),
-          isLoading: false,
-          currentSessionId,
-          getMessages: () => kept,
-          systemPrompt,
-          targets,
-          providerStatus,
-          setIsLoading,
-          setError,
-          setMessages,
-          setSessions,
-          abortControllerRef
-        },
-        { skipUserMessage: true }
+      const addressed = characters.find((c) => c.id === updated.targetId);
+      const target = addressed ?? activeTarget;
+      await generate(
+        { mode: "send", content: "", targets: target ? [target] : [] },
+        kept.map((m) => (m.id === messageId ? updated : m))
       );
     },
-    [currentSessionId, activeTarget, selectedModel, selectedProvider, systemPrompt, providerStatus, truncateAfterMessage]
+    [currentSessionId, activeTarget, characters, generate, truncateAfterMessage]
   );
 
   // Resend a user message as-is: truncate everything after it and regenerate
@@ -572,9 +740,9 @@ export function useChat() {
       const current = messagesRef.current;
       const message = current.find((m) => m.id === messageId);
       if (!message || message.role !== "user") return;
-      await editUserMessage(messageId, message.content, true);
+      await editMessage(messageId, message.content, true);
     },
-    [editUserMessage]
+    [editMessage]
   );
 
   // Branch the conversation at `messageId` into a brand-new session
@@ -601,11 +769,17 @@ export function useChat() {
         selectedModel,
         characterId: source?.characterId,
         participantIds: source?.participantIds,
+        summary: source?.summary,
+        authorNote: source?.authorNote,
+        personaId: source?.personaId,
       };
+      const coveredIndex = current.findIndex((m) => m.id === source?.summaryThroughId);
+      if (coveredIndex !== -1 && coveredIndex <= idx) {
+        newSession.summaryThroughId = branchMessages[coveredIndex].id;
+      }
 
       try {
         await dbService.createSession(newSession);
-        await dbService.addMessages(newSession.id, branchMessages);
       } catch (err) {
         console.error("Failed to create branch session:", err);
         setError("Failed to create branch session");
@@ -621,10 +795,10 @@ export function useChat() {
     [sessions, currentSessionId, selectedProvider, selectedModel]
   );
 
-  // Ask the model to continue its last response without a new user message
+  // Ask the model to extend its last response in place
   const continueResponse = useCallback(async () => {
-    await sendMessage("", { continueLast: true });
-  }, [sendMessage]);
+    await generate({ mode: "continue", target: lastSpeaker() });
+  }, [generate, lastSpeaker]);
 
   const searchChats = useCallback(
     async (query: string) => {
@@ -638,15 +812,17 @@ export function useChat() {
   }, []);
 
   // Session handlers
-  const clearChat = useCallback(async () => {
+  const clearChat = useCallback(async (participantsToCarry?: string[]) => {
+    setLastPrompt(null);
+    setReplyAll(false);
     await clearChatHandler({
       sessions,
       setSessions,
       setCurrentSessionId,
       setMessages,
-      setChatSummary,
       setError,
       selectedCharacter,
+      persona,
       selectedProvider,
       selectedModel,
       currentSessionId,
@@ -654,12 +830,17 @@ export function useChat() {
       characters,
       isSwitchingSessionRef,
       sessionSignatureCache
-    });
+    }, participantsToCarry);
     // Focus the first carried-over participant, if any
     const previousSession = sessions.find((s) => s.id === currentSessionId);
-    const carried = previousSession ? getSessionParticipantIds(previousSession) : [];
+    const carried = participantsToCarry ?? (previousSession ? getSessionParticipantIds(previousSession) : []);
     setActiveTargetId(carried[0] ?? null);
-  }, [selectedCharacter, selectedProvider, selectedModel, sessions, currentSessionId, messages, characters]);
+  }, [selectedCharacter, persona, selectedProvider, selectedModel, sessions, currentSessionId, messages, characters]);
+
+  // A fresh chat with just this character
+  const startChatWith = useCallback(async (character: Character) => {
+    await clearChat([character.id]);
+  }, [clearChat]);
 
   const loadSession = useCallback(
     async (sessionId: string) => {
@@ -667,6 +848,8 @@ export function useChat() {
       if (isLoadingSession || sessionId === currentSessionId) return;
       
       setIsLoadingSession(true);
+      setLastPrompt(null);
+      setReplyAll(false);
       try {
         await loadSessionHandler(
           sessionId,
@@ -675,7 +858,6 @@ export function useChat() {
             setSessions,
             setCurrentSessionId,
             setMessages,
-            setChatSummary,
             setError,
             selectedCharacter,
             selectedProvider,
@@ -715,7 +897,6 @@ export function useChat() {
         setSessions,
         setCurrentSessionId,
         setMessages,
-        setChatSummary,
         setError,
         selectedCharacter,
         selectedProvider,
@@ -845,6 +1026,23 @@ export function useChat() {
     return await duplicateCharacterHandler(character, setCharacters, setCharactersError);
   }, []);
 
+  // Accepts PNG and JSON cards, returning what came in
+  const importCharacters = useCallback(async (files: File[]) => {
+    const imported: Character[] = [];
+    setCharactersError(null);
+    for (const file of files) {
+      try {
+        const character = await importCharacterFile(file);
+        await dbService.createCharacter(character);
+        imported.push(character);
+      } catch (err) {
+        setCharactersError(err instanceof Error ? err.message : `Couldn't import ${file.name}`);
+      }
+    }
+    if (imported.length > 0) setCharacters((prev) => [...imported, ...prev]);
+    return imported;
+  }, []);
+
   // Selecting a character adds/joins them into the chat and focuses them.
   const selectCharacter = useCallback(async (character: Character | undefined) => {
     await addParticipantHandler(
@@ -854,24 +1052,28 @@ export function useChat() {
       messages,
       setActiveTargetId,
       setSessions,
-      setMessages
+      setMessages,
+      persona
     );
-  }, [currentSessionId, sessions, messages]);
+    setReplyAll(false);
+  }, [currentSessionId, sessions, messages, persona]);
 
   // Remove a character from the current chat (their history stays visible)
   const removeParticipant = useCallback(
     async (characterId: string) => {
       if (!currentSessionId) return;
       const nextIds = participantIds.filter((id) => id !== characterId);
+      // The primary character has to follow, an empty list falls back to it
+      const primaryId = nextIds[0] ?? "";
       try {
-        await dbService.updateSession(currentSessionId, { participantIds: nextIds });
+        await dbService.updateSession(currentSessionId, { participantIds: nextIds, characterId: primaryId });
       } catch (err) {
         console.error("Failed to persist participants:", err);
       }
       setSessions((prev) =>
         prev.map((s) =>
           s.id === currentSessionId
-            ? { ...s, participantIds: nextIds.length > 0 ? nextIds : undefined }
+            ? { ...s, participantIds: nextIds.length > 0 ? nextIds : undefined, characterId: primaryId || undefined }
             : s
         )
       );
@@ -910,7 +1112,13 @@ export function useChat() {
     setAutoConnect,
     sendMessage,
     continueResponse,
-    editUserMessage,
+    regenerate,
+    impersonate,
+    impersonation,
+    clearImpersonation: () => setImpersonation(null),
+    swipeMessage,
+    deleteMessage,
+    editMessage,
     resendFromMessage,
     branchFromMessage,
     clearChat,
@@ -942,9 +1150,27 @@ export function useChat() {
     deleteCharacter,
     duplicateCharacter,
     selectCharacter,
-    chatSummary,
-    setChatSummary,
+    startChatWith,
+    importCharacters,
     isLoadingSession,
+    // Settings and personas
+    settings,
+    updateSettings,
+    personas,
+    persona,
+    savePersona,
+    deletePersona,
+    // Memory
+    currentSession,
+    updateCurrentSession,
+    summarizeNow,
+    isSummarizing,
+    memoryError,
+    unsummarized: unsummarizedCount(messages, currentSession?.summaryThroughId),
+    lastPrompt,
+    previewPrompt,
+    replyAll,
+    setReplyAll,
     // Multi-character chat
     participants,
     activeTarget,

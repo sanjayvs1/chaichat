@@ -1,111 +1,63 @@
-import type { ChatMessage, Character, AIProvider, ProviderStatus, ChatSession } from "../types/chat";
-import { LLMService } from "../services/llm";
+import type {
+  AIProvider,
+  AppSettings,
+  Character,
+  CharacterMemory,
+  ChatMessage,
+  ChatSession,
+  GenerationParams,
+  Persona,
+  PromptReport,
+  ProviderStatus,
+  VectorMatch,
+} from "../types/chat";
+import { LLMService, completeChat } from "../services/llm";
 import { dbService } from "../services/database";
-import type { CharacterMemory } from "../types/chat";
+import { CONTINUE_NUDGE, IMPERSONATE_NUDGE, applyMacros, buildPrompt, resolveUserName } from "../lib/prompt";
+import { recallMessages } from "./memoryHandlers";
 import { startTransition as startTransitionSafe } from "react";
 
-export interface MessageHandlerParams {
+export interface GenerationContext {
   selectedModel: string;
   selectedProvider: AIProvider;
   providerName: string;
   isLoading: boolean;
   currentSessionId: string | null;
-  // Read the latest messages at generation time (avoids stale closures during ask-all)
+  // Read the latest values at generation time (avoids stale closures during group replies)
   getMessages: () => ChatMessage[];
+  getSession: () => ChatSession | undefined;
   systemPrompt: string;
-  // Characters that should respond to this message (empty = plain assistant mode)
-  targets: Character[];
+  settings: AppSettings;
+  persona?: Persona;
+  characters: Character[];
+  groupNames: string[];
   providerStatus: ProviderStatus;
   setIsLoading: React.Dispatch<React.SetStateAction<boolean>>;
   setError: React.Dispatch<React.SetStateAction<string | null>>;
+  setMemoryError: React.Dispatch<React.SetStateAction<string | null>>;
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
   setSessions: React.Dispatch<React.SetStateAction<ChatSession[]>>;
+  setLastPrompt: React.Dispatch<React.SetStateAction<PromptReport | null>>;
   abortControllerRef: React.MutableRefObject<AbortController | null>;
 }
 
-// Context window tuning
-const MAX_HISTORY_MESSAGES = 24;
-const MAX_MEMORIES_IN_PROMPT = 30;
+export type GenerationRequest =
+  // Empty content asks for a reply without adding a user message
+  | { mode: "send"; content: string; targets: Character[]; broadcast?: boolean }
+  // Adds a new version of the last message
+  | { mode: "regenerate"; target?: Character }
+  // Extends the last message in place
+  | { mode: "continue"; target?: Character };
+
+// Room left for the reply when the user didn't set a limit
+const DEFAULT_RESPONSE_TOKENS = 512;
 const MAX_MEMORIES_PER_CHARACTER = 40;
 const MEMORY_EXTRACTION_MIN_INTERVAL_MS = 60_000;
 
 // Throttle memory extraction per character (module-level so it survives re-renders)
 const lastExtractionAt = new Map<string, number>();
 
-export function composeCharacterPrompt(character: Character): string {
-  if (character.systemPrompt && character.systemPrompt.trim()) {
-    return character.systemPrompt.trim();
-  }
-  const lines = [`You are ${character.name}.`];
-  if (character.tagline) lines.push("", character.tagline);
-  if (character.description) {
-    lines.push("", "Personality & background:", character.description.trim());
-  }
-  lines.push(
-    "",
-    "Roleplay guidelines:",
-    "- Always stay fully in character",
-    "- Speak, think, and react the way this character would",
-    "- Never break character or mention being an AI or language model",
-    "- Keep responses conversational, engaging and true to the character's voice"
-  );
-  return lines.join("\n");
-}
-
-function buildSystemMessages(
-  target: Character,
-  globalSystemPrompt: string,
-  memories: CharacterMemory[]
-): ChatMessage[] {
-  const systemMessages: ChatMessage[] = [];
-
-  let effectivePrompt = composeCharacterPrompt(target);
-  if (globalSystemPrompt.trim()) {
-    effectivePrompt += `\n\nAdditional instructions:\n${globalSystemPrompt.trim()}`;
-  }
-
-  systemMessages.push({
-    role: "system",
-    content: effectivePrompt,
-    id: crypto.randomUUID(),
-    timestamp: new Date(),
-  });
-
-  if (memories.length > 0) {
-    const memoryBlock = memories
-      .slice(0, MAX_MEMORIES_IN_PROMPT)
-      .map((m) => `- ${m.content}`)
-      .join("\n");
-    systemMessages.push({
-      role: "system",
-      content:
-        `Things you remember about the user and your past interactions ` +
-        `(recall these naturally when relevant, don't list them):\n${memoryBlock}`,
-      id: crypto.randomUUID(),
-      timestamp: new Date(),
-    });
-  }
-
-  return systemMessages;
-}
-
-/**
- * Each character only sees their own slice of the conversation:
- * - messages they authored (assistant messages with their characterId)
- * - user messages addressed to them (or broadcast messages with no target)
- */
-function filterContextForCharacter(messages: ChatMessage[], target?: Character): ChatMessage[] {
-  const relevant = target
-    ? messages.filter((m) => {
-        if (m.role === "assistant") return m.characterId === target.id;
-        if (m.role === "user") return !m.targetId || m.targetId === target.id;
-        return false;
-      })
-    : messages;
-
-  // Keep a recent chronological window (order preserved — LLMs need coherent flow)
-  return relevant.slice(-MAX_HISTORY_MESSAGES);
-}
+const responseTokens = (settings: AppSettings) => settings.generation.maxTokens || DEFAULT_RESPONSE_TOKENS;
 
 async function loadMemoriesForTarget(target: Character): Promise<CharacterMemory[]> {
   try {
@@ -114,6 +66,119 @@ async function loadMemoriesForTarget(target: Character): Promise<CharacterMemory
     console.warn("Failed to load memories for", target.name, err);
     return [];
   }
+}
+
+export async function assemblePrompt(
+  context: GenerationContext,
+  target: Character | undefined,
+  history: ChatMessage[],
+  nudge?: string
+): Promise<PromptReport> {
+  const { settings, currentSessionId, setMemoryError } = context;
+  const session = context.getSession();
+  const generation = settings.generation;
+  const budget = Math.max(generation.contextTokens - responseTokens(settings), 256);
+
+  const memories = target && target.memoryEnabled !== false ? await loadMemoriesForTarget(target) : [];
+
+  // Recall is a bonus, a failed embedding server shouldn't stop the chat
+  let recalled: VectorMatch[] = [];
+  if (currentSessionId) {
+    try {
+      recalled = await recallMessages({
+        sessionId: currentSessionId,
+        messages: history,
+        target,
+        settings: settings.vectors,
+        budget,
+      });
+      setMemoryError(null);
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : "Vector recall failed");
+    }
+  }
+
+  return buildPrompt({
+    target,
+    characters: context.characters,
+    groupNames: context.groupNames,
+    persona: context.persona,
+    globalInstructions: context.systemPrompt,
+    memories,
+    summary: session?.summary,
+    recalled,
+    authorNote: session?.authorNote,
+    messages: history,
+    groupContext: settings.groupContext,
+    contextTokens: generation.contextTokens,
+    responseTokens: responseTokens(settings),
+    nudge,
+  });
+}
+
+function requestParams(context: GenerationContext, target: Character | undefined): Partial<GenerationParams> {
+  const params = context.settings.generation;
+  // Stops the model from writing the user's next line for them
+  const stop = target ? [`\n${resolveUserName(context.persona)}:`, ...params.stop] : params.stop;
+  return {
+    temperature: params.temperature,
+    topP: params.topP,
+    frequencyPenalty: params.frequencyPenalty,
+    presencePenalty: params.presencePenalty,
+    maxTokens: params.maxTokens,
+    seed: params.seed,
+    stop,
+  };
+}
+
+// Streams one reply, handing the text so far to onText at a rate the UI can keep up with
+async function streamReply(
+  context: GenerationContext,
+  target: Character | undefined,
+  history: ChatMessage[],
+  signal: AbortSignal,
+  onText: (text: string) => void,
+  nudge?: string
+): Promise<string> {
+  const report = await assemblePrompt(context, target, history, nudge);
+  context.setLastPrompt(report);
+
+  let fullResponse = "";
+  let lastUpdate = Date.now();
+  let updateTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  const stream = LLMService.chatStream(
+    context.selectedProvider,
+    context.selectedModel,
+    report.messages,
+    signal,
+    requestParams(context, target)
+  );
+
+  for await (const chunk of stream) {
+    if (signal.aborted) break;
+    fullResponse += chunk;
+
+    const nowMs = Date.now();
+    if (nowMs - lastUpdate > 150) {
+      lastUpdate = nowMs;
+      if (updateTimeout) {
+        clearTimeout(updateTimeout);
+        updateTimeout = null;
+      }
+      onText(fullResponse);
+    } else if (!updateTimeout) {
+      updateTimeout = setTimeout(() => {
+        updateTimeout = null;
+        lastUpdate = Date.now();
+        if (!signal.aborted) onText(fullResponse);
+      }, 250);
+    }
+  }
+
+  if (updateTimeout) clearTimeout(updateTimeout);
+  onText(fullResponse);
+  return fullResponse;
 }
 
 /**
@@ -169,10 +234,7 @@ async function extractMemoriesInBackground(
       },
     ];
 
-    let result = "";
-    for await (const chunk of LLMService.chatStream(provider, model, prompt, new AbortController().signal)) {
-      result += chunk;
-    }
+    const result = await completeChat(provider, model, prompt);
 
     const lines = result
       .split("\n")
@@ -228,242 +290,206 @@ async function extractMemoriesInBackground(
   }
 }
 
-export interface SendMessageOptions {
-  /** Don't add a new user message — regenerate a response from existing history (edit/resend/continue) */
-  skipUserMessage?: boolean;
-  /** Nudge appended to the request so the model continues where it stopped */
-  continueNudge?: string;
-}
+const isAbort = (err: unknown) => err instanceof Error && err.name === "AbortError";
+const failureText = (err: unknown) => (err instanceof Error ? err.message : "Failed to get response");
 
-export const sendMessageHandler = async (
-  content: string,
-  params: MessageHandlerParams,
-  options: SendMessageOptions = {}
-) => {
-  const {
-    selectedModel,
-    selectedProvider,
-    providerName,
-    isLoading,
-    currentSessionId,
-    getMessages,
-    systemPrompt,
-    targets,
-    providerStatus,
-    setIsLoading,
-    setError,
-    setMessages,
-    setSessions,
-    abortControllerRef,
-  } = params;
-
-  const { skipUserMessage = false, continueNudge } = options;
-
-  if (!selectedModel || isLoading || !currentSessionId) return;
-
-  // Regenerating/continuing requires an existing conversation to respond to
-  const existingMessages = getMessages();
-  if (skipUserMessage && !existingMessages.some((m) => m.role === "user")) return;
-
-  // Check if the provider is available
+function canGenerate(context: GenerationContext): boolean {
+  const { selectedModel, isLoading, currentSessionId, selectedProvider, providerStatus, providerName, setError } = context;
+  if (!selectedModel || isLoading || !currentSessionId) return false;
   if (!providerStatus[selectedProvider]) {
     setError(`${providerName} is not connected. Check it under Connections.`);
-    return;
+    return false;
   }
+  return true;
+}
 
-  // Cancel any ongoing request with priority handling
-  if (abortControllerRef.current) {
-    abortControllerRef.current.abort();
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+async function touchSession(context: GenerationContext, content: string) {
+  const { currentSessionId, getMessages, setSessions } = context;
+  if (!currentSessionId) return;
 
-  const currentMessages = getMessages();
-
-  // The user message this response responds to (existing when regenerating)
-  const lastUserMessage = [...currentMessages].reverse().find((m) => m.role === "user");
-
-  // One broadcast user message when several characters will answer,
-  // otherwise address the single target directly.
-  const primaryTarget = targets[0];
-  const userMessage: ChatMessage = skipUserMessage
-    ? (lastUserMessage ?? {
-        id: crypto.randomUUID(),
-        role: "user",
-        content,
-        timestamp: new Date(),
-      })
-    : {
-        id: crypto.randomUUID(),
-        role: "user",
-        content,
-        timestamp: new Date(),
-        targetId: primaryTarget?.id,
-      };
-
-  // Assistant placeholders for every responding character.
-  // When regenerating, replace the trailing assistant placeholder(s) instead of appending.
-  const assistantMessages: ChatMessage[] = targets.map(
-    (target): ChatMessage => ({
-      id: crypto.randomUUID(),
-      role: "assistant",
-      content: "",
-      timestamp: new Date(),
-      characterId: target.id || undefined,
-    })
-  );
-
-  // Plain assistant mode (no characters involved)
-  if (targets.length === 0) {
-    assistantMessages.push({
-      id: crypto.randomUUID(),
-      role: "assistant",
-      content: "",
-      timestamp: new Date(),
-    });
-  }
-
-  setIsLoading(true);
-  setError(null);
-  if (skipUserMessage) {
-    // Drop empty assistant placeholders (previous aborted attempts), then append fresh ones
-    setMessages((prev) => [
-      ...prev.filter((m) => !(m.role === "assistant" && m.content === "")),
-      ...assistantMessages,
-    ]);
-  } else {
-    setMessages((prev) => [...prev, userMessage, ...assistantMessages]);
-  }
-
-  // Update session title / timestamps
   const nowIso = new Date().toISOString();
-  if (currentMessages.length === 0) {
-    const cleanedTitle =
-      content
-        .replace(/[\n\r]+/g, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 50) || "New Conversation";
-    await dbService.updateSession(currentSessionId, { title: cleanedTitle, updatedAt: nowIso });
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.id === currentSessionId ? { ...s, title: cleanedTitle, updatedAt: nowIso } : s
-      )
-    );
-  } else {
-    await dbService.updateSession(currentSessionId, { updatedAt: nowIso });
-    setSessions((prev) =>
-      prev.map((s) => (s.id === currentSessionId ? { ...s, updatedAt: nowIso } : s))
-    );
-  }
+  const isFirstUserMessage = content && !getMessages().some((m) => m.role === "user");
+  const title = isFirstUserMessage
+    ? content.replace(/\s+/g, " ").trim().slice(0, 50) || "New Conversation"
+    : undefined;
 
-  abortControllerRef.current = new AbortController();
-  const signal = abortControllerRef.current.signal;
+  await dbService.updateSession(currentSessionId, { updatedAt: nowIso, ...(title ? { title } : {}) });
+  setSessions((prev) =>
+    prev.map((s) => (s.id === currentSessionId ? { ...s, updatedAt: nowIso, ...(title ? { title } : {}) } : s))
+  );
+}
 
-  // Completed responses from this send — merged into context immediately so
-  // the next character always sees earlier answers even before React commits.
-  const pendingResponses: ChatMessage[] = [];
+// Regenerate and continue both rewrite the last message, the only difference being
+// which version they write to and what they keep
+async function rewriteLastMessage(
+  request: Extract<GenerationRequest, { mode: "regenerate" | "continue" }>,
+  context: GenerationContext,
+  signal: AbortSignal
+) {
+  const { getMessages, setMessages, setError } = context;
+  const messages = getMessages();
+  const original = messages[messages.length - 1];
+  if (original?.role !== "assistant") return;
 
-  try {
-    // Sequentially generate a response for each target so each gets its own context.
-    for (let i = 0; i < Math.max(targets.length, 1); i++) {
-      if (signal.aborted) break;
+  const isContinue = request.mode === "continue";
+  const versions = original.swipes?.length ? original.swipes : [original.content];
+  const swipes = isContinue ? versions : [...versions, ""];
+  const swipeIndex = isContinue ? (original.swipeIndex ?? 0) : swipes.length - 1;
+  const base = isContinue ? original.content : "";
 
-      const target = targets[i];
-      const assistantMessage = targets.length > 0 ? assistantMessages[i] : assistantMessages[0];
-
-      // Fresh history includes any earlier responses from this same send (ask-all)
-      const latestList = getMessages();
-      const knownIds = new Set(latestList.map((m) => m.id));
-      const latestMessages = [...latestList, ...pendingResponses.filter((m) => !knownIds.has(m.id))];
-      const relevantHistory = filterContextForCharacter(latestMessages, target);
-
-      const memories = target && target.memoryEnabled !== false ? await loadMemoriesForTarget(target) : [];
-      const systemMessages = target ? buildSystemMessages(target, systemPrompt, memories) : systemPrompt.trim() ? [{ role: "system" as const, content: systemPrompt.trim(), id: crypto.randomUUID(), timestamp: new Date() }] : [];
-
-      const messageHistory: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
-        ...systemMessages.map(({ role, content }) => ({ role, content })),
-        // Skip empty assistant placeholders (e.g., the response being generated now)
-        ...relevantHistory
-          .filter((m) => !(m.role === "assistant" && m.content === ""))
-          .map(({ role, content }) => ({ role, content })),
-      ];
-
-      // Non-persisted nudge so the model continues seamlessly (continue button)
-      if (continueNudge) {
-        messageHistory.push({ role: "user", content: continueNudge });
-      }
-
-      let fullResponse = "";
-      let lastUpdate = Date.now();
-      let updateTimeout: ReturnType<typeof setTimeout> | null = null;
-
-      const pushUpdate = (snapshot: string) => {
-        startTransitionSafe(() => {
-          setMessages((prevMessages) =>
-            prevMessages.map((msg) =>
-              msg.id === assistantMessage.id ? { ...msg, content: snapshot } : msg
-            )
-          );
-        });
-      };
-
-      for await (const chunk of LLMService.chatStream(selectedProvider, selectedModel, messageHistory, signal)) {
-        if (signal.aborted) break;
-        fullResponse += chunk;
-
-        const nowMs = Date.now();
-        if (nowMs - lastUpdate > 150) {
-          lastUpdate = nowMs;
-          if (updateTimeout) {
-            clearTimeout(updateTimeout);
-            updateTimeout = null;
-          }
-          pushUpdate(fullResponse);
-        } else if (!updateTimeout) {
-          updateTimeout = setTimeout(() => {
-            updateTimeout = null;
-            lastUpdate = Date.now();
-            if (!signal.aborted) pushUpdate(fullResponse);
-          }, 250);
-        }
-      }
-
-      if (updateTimeout) clearTimeout(updateTimeout);
-
-      if (!signal.aborted) {
-        pushUpdate(fullResponse);
-        pendingResponses.push({ ...assistantMessage, content: fullResponse });
-
-        // Background per-character memory extraction
-        if (target) {
-          const exchange = [...relevantHistory, { ...userMessage, content }, { role: "assistant" as const, content: fullResponse, id: assistantMessage.id, timestamp: new Date() }];
-          setTimeout(() => {
-            extractMemoriesInBackground(target, exchange, currentSessionId, selectedProvider, selectedModel).catch(() => {});
-          }, 1500);
-        }
-      } else {
-        // Aborted mid-stream: keep partial response if there is one, drop empty placeholders
-        if (!fullResponse) {
-          setMessages((prevMessages) => prevMessages.filter((msg) => msg.id !== assistantMessage.id));
-        }
-        break;
-      }
-    }
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      // Remove empty assistant placeholders on cancel
-      setMessages((prevMessages) => prevMessages.filter((msg) => !(msg.role === "assistant" && msg.content === "")));
-    } else {
-      const errorMessage = err instanceof Error ? err.message : "Failed to get response";
-      setError(errorMessage);
-      setMessages((prevMessages) =>
-        prevMessages.map((msg) =>
-          assistantMessages.some((am) => am.id === msg.id) && msg.content === ""
-            ? { ...msg, content: `Error: ${errorMessage}` }
-            : msg
+  const write = (text: string) => {
+    const content = base + text;
+    startTransitionSafe(() => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === original.id
+            ? { ...m, content, swipeIndex, swipes: swipes.map((v, i) => (i === swipeIndex ? content : v)) }
+            : m
         )
       );
+    });
+  };
+  const restore = () => setMessages((prev) => prev.map((m) => (m.id === original.id ? original : m)));
+
+  write("");
+  try {
+    const history = isContinue ? messages : messages.slice(0, -1);
+    const text = await streamReply(context, request.target, history, signal, write, isContinue ? CONTINUE_NUDGE : undefined);
+    if (!text) restore();
+  } catch (err) {
+    restore();
+    if (!isAbort(err)) setError(failureText(err));
+  }
+}
+
+async function sendAndReply(
+  request: Extract<GenerationRequest, { mode: "send" }>,
+  context: GenerationContext,
+  signal: AbortSignal
+) {
+  const { getMessages, setMessages, setError, selectedProvider, selectedModel, currentSessionId } = context;
+  const { content, targets, broadcast } = request;
+
+  const userMessage: ChatMessage | null = content
+    ? {
+        id: crypto.randomUUID(),
+        role: "user",
+        content,
+        timestamp: new Date(),
+        targetId: broadcast ? undefined : targets[0]?.id,
+      }
+    : null;
+
+  // One reply per target, or a single plain one when no character is involved.
+  // Timestamps are the display order, so they mustn't tie.
+  const speakers = targets.length > 0 ? targets : [undefined];
+  const replies: ChatMessage[] = speakers.map((target, i) => ({
+    id: crypto.randomUUID(),
+    role: "assistant",
+    content: "",
+    timestamp: new Date(Date.now() + i + 1),
+    characterId: target?.id,
+  }));
+
+  await touchSession(context, content);
+  setMessages((prev) => [...prev, ...(userMessage ? [userMessage] : []), ...replies]);
+
+  // Finished replies from this send. React may not have committed them yet, and
+  // the next character still needs to see them.
+  const completed: ChatMessage[] = [];
+  const dropReply = (id: string) => setMessages((prev) => prev.filter((m) => m.id !== id));
+
+  for (let i = 0; i < speakers.length && !signal.aborted; i++) {
+    const target = speakers[i];
+    const reply = replies[i];
+    const latest = [...getMessages()];
+    if (userMessage && !latest.some((m) => m.id === userMessage.id)) latest.push(userMessage);
+    const known = new Set(latest.map((m) => m.id));
+    const pendingIds = new Set(replies.map((r) => r.id));
+    const history = [
+      ...latest.filter((m) => !pendingIds.has(m.id)),
+      ...completed.filter((m) => !known.has(m.id) || pendingIds.has(m.id)),
+    ];
+
+    const write = (text: string) => {
+      startTransitionSafe(() => {
+        setMessages((prev) => prev.map((m) => (m.id === reply.id ? { ...m, content: text } : m)));
+      });
+    };
+
+    try {
+      const text = await streamReply(context, target, history, signal, write);
+      if (!text) {
+        dropReply(reply.id);
+        if (!signal.aborted) setError("The model returned an empty reply.");
+        continue;
+      }
+      completed.push({ ...reply, content: text });
+
+      if (target && !signal.aborted) {
+        const exchange = [...history.slice(-7), { ...reply, content: text }];
+        setTimeout(() => {
+          extractMemoriesInBackground(target, exchange, currentSessionId, selectedProvider, selectedModel).catch(() => {});
+        }, 1500);
+      }
+    } catch (err) {
+      dropReply(reply.id);
+      replies.slice(i + 1).forEach((later) => dropReply(later.id));
+      if (!isAbort(err)) setError(failureText(err));
+      return;
     }
+  }
+
+  // Stopped before their turn came
+  replies.filter((r) => !completed.some((c) => c.id === r.id)).forEach((r) => {
+    setMessages((prev) => prev.filter((m) => !(m.id === r.id && m.content === "")));
+  });
+}
+
+export const generateHandler = async (request: GenerationRequest, context: GenerationContext) => {
+  if (!canGenerate(context)) return;
+
+  const { abortControllerRef, setIsLoading, setError } = context;
+  if (request.mode === "send" && !request.content && context.getMessages().length === 0) return;
+
+  const controller = new AbortController();
+  abortControllerRef.current = controller;
+  setIsLoading(true);
+  setError(null);
+
+  try {
+    if (request.mode === "send") await sendAndReply(request, context, controller.signal);
+    else await rewriteLastMessage(request, context, controller.signal);
+  } catch (err) {
+    if (!isAbort(err)) setError(failureText(err));
+  } finally {
+    setIsLoading(false);
+    abortControllerRef.current = null;
+  }
+};
+
+/** Writes the user's next message for them. onText gets the draft as it streams in. */
+export const impersonateHandler = async (
+  target: Character | undefined,
+  context: GenerationContext,
+  onText: (text: string) => void
+) => {
+  if (!canGenerate(context)) return;
+
+  const { abortControllerRef, setIsLoading, setError, getMessages, persona } = context;
+  const userName = resolveUserName(persona);
+  const nudge = applyMacros(IMPERSONATE_NUDGE, { charName: target?.name, userName });
+  const namePrefix = new RegExp(`^\\s*${userName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\s*`, "i");
+
+  const controller = new AbortController();
+  abortControllerRef.current = controller;
+  setIsLoading(true);
+  setError(null);
+
+  try {
+    await streamReply(context, target, getMessages(), controller.signal, (text) => onText(text.replace(namePrefix, "")), nudge);
+  } catch (err) {
+    if (!isAbort(err)) setError(failureText(err));
   } finally {
     setIsLoading(false);
     abortControllerRef.current = null;

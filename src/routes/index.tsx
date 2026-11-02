@@ -1,30 +1,33 @@
-import { VisuallyHidden } from '@radix-ui/react-visually-hidden'
-import { AlertCircle, Bot, Code2, Github, Menu, Moon, Play, Plus, RefreshCw, Search, Settings, Square, Sun, Users, Wifi, WifiOff, X, Plug, MessagesSquare } from 'lucide-react'
-import { useEffect, useRef, useState, useMemo, useDeferredValue, useCallback } from 'react'
-import { CharacterList } from '../components/CharacterList'
+import { AlertCircle, ArrowDown, BookOpenText, Coffee, Moon, PanelLeft, Plug, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Sun, UserRound, Users, X } from 'lucide-react'
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
+import { CharacterAvatar } from '../components/CharacterAvatar'
+import { CharacterGallery } from '../components/CharacterGallery'
 import { ChatInput } from '../components/ChatInput'
 import { ChatMessage } from '../components/ChatMessage'
-import { ChatSearch } from '../components/ChatSearch'
 import { ChatSessionList } from '../components/ChatSessionList'
-import { ModelSelector } from '../components/ModelSelector'
-import { ProviderSelector } from '../components/ProviderSelector'
+import { CommandPalette, type PaletteAction } from '../components/CommandPalette'
 import { ConnectionManager } from '../components/ConnectionManager'
+import { MemoryPanel } from '../components/MemoryPanel'
+import { ModelSelector } from '../components/ModelSelector'
 import { ParticipantsBar } from '../components/ParticipantsBar'
-import { SavedScripts } from '../components/SavedScripts'
-import { SystemPromptEditor } from '../components/SystemPromptEditor'
-import { CharacterAvatar } from '../components/CharacterAvatar'
-import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert'
-import { Badge } from '../components/ui/badge'
+import { ProviderSelector } from '../components/ProviderSelector'
+import { SettingsDialog, type SettingsSection } from '../components/SettingsDialog'
 import { Button } from '../components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../components/ui/dialog'
-import { Sidebar, SidebarContent, SidebarHeader, SidebarItem } from '../components/ui/sidebar'
 import { useChat } from '../hooks/useChat'
 import { dbService } from '../services/database'
-import type { SavedScript } from '../types/chat'
+import { nameHue } from '@/lib/cards'
+import { formatTokens } from '@/lib/tokens'
+import { cn } from '@/lib/utils'
+import type { Character, SavedScript } from '../types/chat'
 
 export default Index
 
+const PAGE_SIZE = 50
+// How close to the bottom still counts as following along
+const STICK_THRESHOLD_PX = 120
+
 function Index() {
+  const chat = useChat()
   const {
     messages,
     sessions,
@@ -36,7 +39,6 @@ function Index() {
     isLoading,
     isModelsLoading,
     error,
-
     providerStatus,
     connections,
     presets,
@@ -49,7 +51,13 @@ function Index() {
     setAutoConnect,
     sendMessage,
     continueResponse,
-    editUserMessage,
+    regenerate,
+    impersonate,
+    impersonation,
+    clearImpersonation,
+    swipeMessage,
+    deleteMessage,
+    editMessage,
     resendFromMessage,
     branchFromMessage,
     clearChat,
@@ -64,358 +72,204 @@ function Index() {
     duplicateSession,
     getCurrentSessionId,
     getSessionsByDateGroup,
-    sortedSessions,
     exportSessions,
     importSessions,
     exportSession,
     characters,
-    selectedCharacter,
-    isCharactersLoading,
     charactersError,
     createCharacter,
     updateCharacter,
     deleteCharacter,
     duplicateCharacter,
     selectCharacter,
+    startChatWith,
+    importCharacters,
     participants,
     activeTarget,
     activeTargetId,
     removeParticipant,
-    isLoadingSession
-  } = useChat()
+    isLoadingSession,
+    settings,
+    updateSettings,
+    personas,
+    persona,
+    savePersona,
+    deletePersona,
+    currentSession,
+    updateCurrentSession,
+    summarizeNow,
+    isSummarizing,
+    memoryError,
+    unsummarized,
+    lastPrompt,
+    previewPrompt,
+    replyAll,
+    setReplyAll,
+  } = chat
 
-  const [showPromptEditor, setShowPromptEditor] = useState(false)
-  const [showSearch, setShowSearch] = useState(false)
-  const [showCharacters, setShowCharacters] = useState(false)
-  const [showConnections, setShowConnections] = useState(false)
-  const [showSavedScripts, setShowSavedScripts] = useState(false)
-  const [sidebarOpen, setSidebarOpen] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return window.innerWidth >= 768 // Default to open on desktop (md breakpoint)
-    }
-    return false
-  })
-  const [isDark, setIsDark] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('theme') === 'dark' || 
-        (!localStorage.getItem('theme') && window.matchMedia('(prefers-color-scheme: dark)').matches)
-    }
-    return true // Default to dark since we set it in main.tsx
-  })
+  const [view, setView] = useState<'chat' | 'characters'>('chat')
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [memoryOpen, setMemoryOpen] = useState(false)
+  const [noteFocus, setNoteFocus] = useState(0)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('persona')
+  const [isDraggingCard, setIsDraggingCard] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
+  const [isDark, setIsDark] = useState(() => localStorage.getItem('theme') !== 'light')
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const [isAtBottom, setIsAtBottom] = useState(true)
 
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const messagesContainerRef = useRef<HTMLDivElement>(null)
-  const mainContentRef = useRef<HTMLDivElement>(null)
-  const previousSessionId = useRef<string | null>(null)
-  const lastAssistantMessageRef = useRef<HTMLDivElement>(null)
-  const lastMessageRef = useRef<HTMLDivElement>(null)
-  const lastMessageIdRef = useRef<string | null>(null)
-  const lastAssistantIdRef = useRef<string | null>(null)
-  const lastUserMessageRef = useRef<HTMLDivElement>(null)
-  const lastUserMessageIdRef = useRef<string | null>(null)
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  const followRef = useRef(true)
 
-  // Force scroll to bottom when switching sessions
+  const currentSessionId = useMemo(() => getCurrentSessionId(), [getCurrentSessionId])
+  const selectedConnection = connections.find(c => c.id === selectedProvider)
+  const isConnected = !!providerStatus[selectedProvider]
+  const canGenerate = !!selectedModel && isConnected
+  const lastMessage = messages[messages.length - 1]
+  const canRewrite = lastMessage?.role === 'assistant' && !!lastMessage.content.trim()
+  const hue = activeTarget ? nameHue(activeTarget.name) : undefined
+
+  // Theme, accent and message font live on <html> so dialogs pick them up too
   useEffect(() => {
-    const currentSessionId = getCurrentSessionId()
-    if (currentSessionId !== previousSessionId.current && messagesEndRef.current) {
-      // Session changed, force scroll to bottom
-      setTimeout(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' })
-      }, 0)
-      previousSessionId.current = currentSessionId
-    }
-  }, [messages, getCurrentSessionId])
+    const root = document.documentElement
+    root.classList.toggle('dark', isDark)
+    root.dataset.accent = settings.accent
+    root.dataset.chatFont = settings.chatFont
+    localStorage.setItem('theme', isDark ? 'dark' : 'light')
+  }, [isDark, settings.accent, settings.chatFont])
 
-  // Remove aggressive auto-scroll during streaming; we'll center on assistant start only
-
-  // Auto-scroll when selecting text in chat area
   useEffect(() => {
-    const container = messagesContainerRef.current
-    if (!container) return
+    if (!toast) return
+    const timer = setTimeout(() => setToast(null), 3500)
+    return () => clearTimeout(timer)
+  }, [toast])
 
-    let isSelecting = false
-    let scrollAnimation: number | null = null
-
-    function onMouseDown(e: MouseEvent) {
-      if (e.target && (e.target as HTMLElement).closest('#main-content')) {
-        isSelecting = true
-      }
-    }
-    function onMouseMove(e: MouseEvent) {
-      if (!isSelecting || !container) return
-      const { clientY } = e
-      const { top, bottom } = container.getBoundingClientRect()
-      const scrollStep = 40
-      // If dragging below the visible area, scroll down
-      if (clientY > bottom - 20) {
-        if (!scrollAnimation) {
-          scrollAnimation = window.requestAnimationFrame(() => {
-            if (container) container.scrollTop += scrollStep
-            scrollAnimation = null
-          })
-        }
-      } else if (clientY < top + 20) {
-        if (!scrollAnimation) {
-          scrollAnimation = window.requestAnimationFrame(() => {
-            if (container) container.scrollTop -= scrollStep
-            scrollAnimation = null
-          })
-        }
-      }
-    }
-    function onMouseUp() {
-      isSelecting = false
-      if (scrollAnimation) {
-        window.cancelAnimationFrame(scrollAnimation)
-        scrollAnimation = null
-      }
-    }
-    document.addEventListener('mousedown', onMouseDown)
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('mouseup', onMouseUp)
-    return () => {
-      document.removeEventListener('mousedown', onMouseDown)
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('mouseup', onMouseUp)
-      if (scrollAnimation) window.cancelAnimationFrame(scrollAnimation)
-    }
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    const scroller = scrollerRef.current
+    if (scroller) scroller.scrollTo({ top: scroller.scrollHeight, behavior })
   }, [])
 
-  // Defer large messages array to reduce render pressure during updates
-  const deferredMessages = useDeferredValue(messages)
-  
-  // State for progressive message loading in large sessions
-  const [visibleMessageCount, setVisibleMessageCount] = useState(50)
-  
-  // Memoize messages to prevent unnecessary re-renders
-  const messagesForRender = useMemo(() => {
-    // For sessions with many messages, show only a subset initially
-    if (deferredMessages.length > visibleMessageCount) {
-      return deferredMessages.slice(-visibleMessageCount)
-    }
-    return deferredMessages
-  }, [deferredMessages, visibleMessageCount])
-  
-  const loadMoreMessages = useCallback(() => {
-    setVisibleMessageCount(prev => Math.min(prev + 50, messages.length))
-  }, [messages.length])
+  const handleScroll = () => {
+    const scroller = scrollerRef.current
+    if (!scroller) return
+    const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < STICK_THRESHOLD_PX
+    followRef.current = atBottom
+    setIsAtBottom(atBottom)
+  }
 
-  // Handle scrolling for new messages when they are appended.
-  // For LLM responses, position them at the top of the viewport for better readability.
-  // For user messages, center them in the viewport.
+  // Follow the conversation unless the reader scrolled up to look at something
   useEffect(() => {
-    if (messagesForRender.length === 0) return
-    const lastMessage = messagesForRender[messagesForRender.length - 1]
-    if (lastMessage.id === lastMessageIdRef.current) return
+    if (followRef.current) scrollToBottom()
+  }, [messages, scrollToBottom])
 
-    // If an assistant placeholder (empty content) appears, immediately position it at top.
-    if (lastMessage.role === 'assistant' && lastMessage.content === '') {
-      const container = messagesContainerRef.current
-      const target = lastAssistantMessageRef.current
-      if (container && target) {
-        const desiredTop = Math.max(0, target.offsetTop - 20)
-        container.scrollTo({ top: desiredTop, behavior: 'smooth' })
-      }
-
-      // Track so we don't rerun unnecessarily
-      lastMessageIdRef.current = lastMessage.id
-      lastAssistantIdRef.current = lastMessage.id
-      return
-    }
-
-    const container = messagesContainerRef.current
-    const target = lastMessage.role === 'assistant' ? lastAssistantMessageRef.current : lastMessageRef.current
-    
-    if (container && target) {
-      // Use setTimeout to ensure DOM has updated
-      setTimeout(() => {
-        if (lastMessage.role === 'assistant') {
-          // Align assistant response so its very start sits 20px below the top of the container
-          const desiredTop = Math.max(0, target.offsetTop - 200)
-          if (typeof container.scrollTo === 'function') {
-            container.scrollTo({ top: desiredTop, behavior: 'smooth' })
-          } else {
-            container.scrollTop = desiredTop
-          }
-        } else {
-          const containerRect = container.getBoundingClientRect()
-          const targetRect = target.getBoundingClientRect()
-          const currentScrollTop = container.scrollTop
-          const targetTopRelativeToContainer = targetRect.top - containerRect.top + currentScrollTop  
-          // For user messages, scroll to bottom to show the full message
-          const desiredTop = Math.max(0, targetTopRelativeToContainer + targetRect.height - container.clientHeight + 20)
-          if (typeof container.scrollTo === 'function') {
-            container.scrollTo({ top: desiredTop, behavior: 'smooth' })
-          } else {
-            container.scrollTop = desiredTop
-          }
-        }
-      }, 50)
-    }
-
-    lastMessageIdRef.current = lastMessage.id
-    if (lastMessage.role === 'assistant') {
-      lastAssistantIdRef.current = lastMessage.id
-    }
-  }, [messagesForRender])
-
-  // Auto-scroll to user messages when they are sent
   useEffect(() => {
-    if (messagesForRender.length === 0) return
-    
-    // If the very latest message is not a user message, do not auto-scroll to bottom.
-    const newest = messagesForRender[messagesForRender.length - 1]
-    if (newest.role !== 'user') return
+    followRef.current = true
+    setIsAtBottom(true)
+    setVisibleCount(PAGE_SIZE)
+    requestAnimationFrame(() => scrollToBottom())
+  }, [currentSessionId, view, scrollToBottom])
 
-    // Find the last user message
-    const lastUserMessage = newest // because newest is user
-    if (lastUserMessage.id === lastUserMessageIdRef.current) return
-
-    const container = messagesContainerRef.current
-    const target = lastUserMessageRef.current
-    
-    if (container && target) {
-      // Use setTimeout to ensure DOM has updated
-      setTimeout(() => {
-        const containerRect = container.getBoundingClientRect()
-        const targetRect = target.getBoundingClientRect()
-        const currentScrollTop = container.scrollTop
-        const targetTopRelativeToContainer = targetRect.top - containerRect.top + currentScrollTop
-        
-        // For user messages, scroll to show the full message at the bottom with some padding
-        const desiredTop = Math.max(0, targetTopRelativeToContainer + targetRect.height - container.clientHeight + 20)
-        
-        if (typeof container.scrollTo === 'function') {
-          container.scrollTo({ top: desiredTop, behavior: 'smooth' })
-        } else {
-          container.scrollTop = desiredTop
-        }
-      }, 50)
-    }
-    
-    lastUserMessageIdRef.current = lastUserMessage.id
-  }, [messagesForRender])
-
-  // Fallback: keep the bottom in view *only* when the latest message isn't an assistant response.
+  // Keeps the panel about the chat on screen. Waits for the switch to land, the report
+  // cleared by loading a session would otherwise be rebuilt for the previous character.
+  const previewRef = useRef(previewPrompt)
+  previewRef.current = previewPrompt
   useEffect(() => {
-    if (messagesForRender.length === 0) return
-    const lastMsg = messagesForRender[messagesForRender.length - 1]
-    if (lastMsg.role === 'assistant') return // let assistant-specific logic handle scrolling
+    if (memoryOpen && view === 'chat' && !isLoading && !isLoadingSession) previewRef.current()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isLoading isn't a reason to rebuild, generating sets its own report
+  }, [memoryOpen, view, currentSessionId, activeTargetId, isLoadingSession])
 
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [messagesForRender.length])
+  const openSettings = useCallback((section: SettingsSection) => {
+    setSettingsSection(section)
+    setSettingsOpen(true)
+  }, [])
 
-  // During streaming, keep the assistant response positioned at the top for readability
-  // This effect handles the initial positioning when streaming starts
-  useEffect(() => {
-    if (!isLoading || messagesForRender.length === 0) return
-    
-    const lastMessage = messagesForRender[messagesForRender.length - 1]
-    if (lastMessage.role !== 'assistant') return
-    
-    // Only position when the assistant message gets its first content
-    if (lastMessage.content === '') return
+  const openNote = useCallback(() => {
+    setMemoryOpen(true)
+    setNoteFocus((n) => n + 1)
+  }, [])
 
-    const container = messagesContainerRef.current
-    const target = lastAssistantMessageRef.current
-    
-    if (container && target) {
-      // Use setTimeout to ensure DOM updates are complete
-      setTimeout(() => {
-        const desiredTop = Math.max(0, target.offsetTop - 20)
-        if (typeof container.scrollTo === 'function') {
-          container.scrollTo({ top: desiredTop, behavior: 'smooth' })
-        } else {
-          container.scrollTop = desiredTop
-        }
-      }, 100)
-    }
-  }, [isLoading, messagesForRender])
+  const startNewChat = useCallback(() => {
+    setView('chat')
+    clearChat()
+  }, [clearChat])
 
-  // Theme toggle effect
-  useEffect(() => {
-    const root = window.document.documentElement
-    if (isDark) {
-      root.classList.add('dark')
-      localStorage.setItem('theme', 'dark')
-    } else {
-      root.classList.remove('dark')
-      localStorage.setItem('theme', 'light')
-    }
-  }, [isDark])
+  const openSession = useCallback((sessionId: string) => {
+    setView('chat')
+    loadSession(sessionId)
+  }, [loadSession])
+
+  const beginChat = useCallback((character: Character) => {
+    setView('chat')
+    startChatWith(character)
+  }, [startChatWith])
 
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Global shortcuts
-      if (e.ctrlKey || e.metaKey) {
-        switch (e.key) {
-          case 'n':
-            e.preventDefault()
-            clearChat()
-            break
-          case 'k':
-            e.preventDefault()
-            setShowSearch(!showSearch)
-            break
-          case '/':
-            e.preventDefault()
-            setShowPromptEditor(!showPromptEditor)
-            break
-          case ',':
-            e.preventDefault()
-            setShowCharacters(!showCharacters)
-            break
-        }
-      }
-      
-      // Escape key handling
-      if (e.key === 'Escape') {
-        if (showPromptEditor) setShowPromptEditor(false)
-        else if (showSearch) setShowSearch(false)
-        else if (showCharacters) setShowCharacters(false)
-        else if (showConnections) setShowConnections(false)
-        else if (showSavedScripts) setShowSavedScripts(false)
-        else if (sidebarOpen) setSidebarOpen(false)
+      if (!(e.ctrlKey || e.metaKey)) return
+      if (e.key === 'n') {
+        e.preventDefault()
+        startNewChat()
+      } else if (e.key === 'k') {
+        e.preventDefault()
+        setPaletteOpen((isOpen) => !isOpen)
+      } else if (e.key === ',') {
+        e.preventDefault()
+        openSettings('persona')
+      } else if (e.key === 'b') {
+        e.preventDefault()
+        setSidebarOpen((isOpen) => !isOpen)
+      } else if (e.key === 'm') {
+        e.preventDefault()
+        setMemoryOpen((isOpen) => !isOpen)
       }
     }
-
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [showPromptEditor, showSearch, showCharacters, showConnections, showSavedScripts, sidebarOpen, clearChat])
+  }, [startNewChat, openSettings])
 
-  // Stable onSendMessage to avoid re-rendering ChatInput during streaming
-  const sendMessageRef = useRef(sendMessage)
-  useEffect(() => { sendMessageRef.current = sendMessage }, [sendMessage])
-  const handleSendMessage = useCallback((text: string) => {
-    sendMessageRef.current(text)
+  const handleImport = useCallback(async (files: File[]) => {
+    if (files.length === 0) return
+    const imported = await importCharacters(files)
+    if (imported.length > 0) {
+      setToast(imported.length === 1 ? `${imported[0].name} joined your shelf.` : `${imported.length} characters added.`)
+      setView('characters')
+    }
+  }, [importCharacters])
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDraggingCard(false)
+    const cards = Array.from(e.dataTransfer.files).filter((file) => /\.(png|json)$/i.test(file.name))
+    handleImport(cards)
+  }
+
+  // Stable handlers for the memoized message list, so streaming only re-renders the last one
+  const handlers = useRef({ sendMessage, editMessage, resendFromMessage, branchFromMessage, deleteMessage, swipeMessage })
+  handlers.current = { sendMessage, editMessage, resendFromMessage, branchFromMessage, deleteMessage, swipeMessage }
+  const handleSend = useCallback((text: string) => {
+    followRef.current = true
+    handlers.current.sendMessage(text)
+  }, [])
+  const handleEdit = useCallback((id: string, content: string, resend: boolean) => {
+    handlers.current.editMessage(id, content, resend)
+  }, [])
+  const handleResend = useCallback((id: string) => handlers.current.resendFromMessage(id), [])
+  const handleBranch = useCallback((id: string) => handlers.current.branchFromMessage(id), [])
+  const handleDelete = useCallback((id: string) => handlers.current.deleteMessage(id), [])
+  const handleSwipe = useCallback((id: string, direction: -1 | 1) => {
+    followRef.current = true
+    handlers.current.swipeMessage(id, direction)
   }, [])
 
-  // Stable per-message handlers for ChatMessage (memoized component)
-  const editUserMessageRef = useRef(editUserMessage)
-  useEffect(() => { editUserMessageRef.current = editUserMessage }, [editUserMessage])
-  const resendFromMessageRef = useRef(resendFromMessage)
-  useEffect(() => { resendFromMessageRef.current = resendFromMessage }, [resendFromMessage])
-  const branchFromMessageRef = useRef(branchFromMessage)
-  useEffect(() => { branchFromMessageRef.current = branchFromMessage }, [branchFromMessage])
-  const handleMessageEdit = useCallback((messageId: string, newContent: string, resend: boolean) => {
-    editUserMessageRef.current(messageId, newContent, resend)
-  }, [])
-  const handleMessageResend = useCallback((messageId: string) => {
-    resendFromMessageRef.current(messageId)
-  }, [])
-  const handleMessageBranch = useCallback((messageId: string) => {
-    branchFromMessageRef.current(messageId)
-  }, [])
-
-  // Continue button: only when idle and the last message is from the assistant
-  const canContinue = useMemo(() => {
-    if (isLoading || messages.length === 0) return false
-    const last = messages[messages.length - 1]
-    return last.role === 'assistant' && last.content.trim().length > 0
-  }, [isLoading, messages])
+  const lastMessageRef = useRef(lastMessage)
+  lastMessageRef.current = lastMessage
+  const handleSwipeLast = useCallback((direction: -1 | 1) => {
+    const last = lastMessageRef.current
+    if (last?.role === 'assistant') handleSwipe(last.id, direction)
+  }, [handleSwipe])
 
   const handleSaveScript = useCallback((code: string, language: string) => {
     const now = new Date().toISOString()
@@ -436,559 +290,390 @@ function Index() {
     dbService.createSavedScript(script).catch(err => console.error('Failed to save script:', err))
   }, [getCurrentSessionId])
 
-  const selectedConnection = connections.find(c => c.id === selectedProvider)
-  const isConnected = !!providerStatus[selectedProvider]
+  const paletteActions = useMemo<PaletteAction[]>(() => [
+    { id: 'new', label: 'New chat', hint: 'Ctrl+N', icon: Plus, run: startNewChat },
+    { id: 'characters', label: 'Browse characters', icon: Users, run: () => setView('characters') },
+    { id: 'memory', label: 'Open memory panel', hint: 'Ctrl+M', icon: BookOpenText, run: () => setMemoryOpen(true) },
+    { id: 'persona', label: 'Change persona', icon: UserRound, run: () => openSettings('persona') },
+    { id: 'generation', label: 'Generation settings', icon: SlidersHorizontal, run: () => openSettings('generation') },
+    { id: 'connections', label: 'Connections', icon: Plug, run: () => openSettings('connections') },
+  ], [startNewChat, openSettings])
 
-  // Memoize current session id string to avoid recomputing during renders
-  const currentSessionId = useMemo(() => getCurrentSessionId(), [getCurrentSessionId])
-  
-  // Reset visible message count when switching sessions
-  useEffect(() => {
-    setVisibleMessageCount(50)
-  }, [currentSessionId])
+  const visibleMessages = messages.length > visibleCount ? messages.slice(-visibleCount) : messages
+
+  const placeholder = !isConnected
+    ? selectedConnection ? `${selectedConnection.name} isn't connected` : 'Add a connection to start chatting'
+    : !selectedModel
+      ? 'Pick a model first'
+      : replyAll
+        ? 'Message everyone'
+        : activeTarget
+          ? `Message ${activeTarget.name}`
+          : 'Message'
+
+  const usage = lastPrompt ? Math.min(lastPrompt.totalTokens / lastPrompt.budget, 1) : 0
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
-      {/* Skip Links for Accessibility */}
-      <div className="sr-only">
-        <a
-          href="#main-content"
-          className="absolute top-0 left-0 z-50 p-4 bg-primary text-primary-foreground focus:not-sr-only focus:fixed"
-          onFocus={() => mainContentRef.current?.focus()}
-        >
-          Skip to main content
-        </a>
-        <a
-          href="#chat-input"
-          className="absolute top-0 left-0 z-50 p-4 bg-primary text-primary-foreground focus:not-sr-only focus:fixed"
-        >
-          Skip to chat input
-        </a>
-      </div>
-
-      {/* Sidebar Overlay */}
+    <div
+      className="flex h-screen overflow-hidden bg-background"
+      style={hue !== undefined ? ({ '--char-hue': hue } as React.CSSProperties) : undefined}
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes('Files')) return
+        e.preventDefault()
+        setIsDraggingCard(true)
+      }}
+      onDragLeave={(e) => {
+        if (!e.relatedTarget) setIsDraggingCard(false)
+      }}
+      onDrop={handleDrop}
+    >
       {sidebarOpen && (
-        <div 
-          className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm md:hidden"
-          onClick={() => setSidebarOpen(false)}
-          aria-hidden="true"
-        />
-      )}
+        <aside className="flex h-screen w-72 flex-shrink-0 flex-col border-r bg-sidebar" aria-label="Chats">
+          <div className="flex h-14 flex-shrink-0 items-center gap-2.5 px-4">
+            <Coffee className="h-5 w-5 text-primary" aria-hidden="true" />
+            <span className="font-display text-xl font-medium tracking-tight">ChaiChat</span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="ml-auto h-8 w-8 text-muted-foreground"
+              aria-label="Hide sidebar"
+              title="Hide sidebar (Ctrl+B)"
+              onClick={() => setSidebarOpen(false)}
+            >
+              <PanelLeft className="h-4 w-4" />
+            </Button>
+          </div>
 
-      {/* Sidebar */}
-      {sidebarOpen && (
-        <aside className="fixed inset-y-0 left-0 z-50 md:relative md:z-auto h-screen transition-all duration-200 ease-in-out">
-          <Sidebar className="w-56 h-screen flex flex-col">
-            <SidebarHeader className="h-12 flex-shrink-0">
-              <Button 
-                className="w-full justify-start gap-2 h-9" 
-                variant="outline"
-                onClick={clearChat}
-              >
-                <Plus className="h-4 w-4" />
-                New chat
-              </Button>
-            </SidebarHeader>
-            
-            <SidebarContent className="flex-1 overflow-y-auto">
-              <div className="space-y-1">
-                <SidebarItem onClick={() => setShowSearch(!showSearch)}>
-                  <Search className="h-4 w-4" />
-                  Search chats
-                </SidebarItem>
-                
-                <SidebarItem onClick={() => setShowPromptEditor(!showPromptEditor)}>
-                  <Settings className="h-4 w-4" />
-                  System prompt
-                </SidebarItem>
-                
-                <SidebarItem onClick={() => setShowCharacters(true)}>
-                  <Users className="h-4 w-4" />
-                  Characters
-                </SidebarItem>
-                
-                <SidebarItem onClick={() => setShowConnections(true)}>
-                  <Plug className="h-4 w-4" />
-                  Connections
-                </SidebarItem>
+          <div className="space-y-1 px-3">
+            <button
+              onClick={() => setPaletteOpen(true)}
+              className="flex h-9 w-full items-center gap-2 rounded-lg border bg-background/50 px-3 text-sm text-muted-foreground transition-colors hover:bg-accent/50"
+            >
+              <Search className="h-3.5 w-3.5" />
+              Search
+              <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 font-sans text-[10px]">Ctrl K</kbd>
+            </button>
+            <button
+              onClick={startNewChat}
+              className="flex h-9 w-full items-center gap-2 rounded-lg px-3 text-sm transition-colors hover:bg-accent/50"
+            >
+              <Plus className="h-4 w-4" /> New chat
+            </button>
+            <button
+              onClick={() => setView('characters')}
+              aria-current={view === 'characters' ? 'page' : undefined}
+              className={cn('flex h-9 w-full items-center gap-2 rounded-lg px-3 text-sm transition-colors hover:bg-accent/50', view === 'characters' && 'bg-accent')}
+            >
+              <Users className="h-4 w-4" /> Characters
+              <span className="ml-auto text-xs text-muted-foreground">{characters.length}</span>
+            </button>
+          </div>
 
-                <SidebarItem onClick={() => setShowSavedScripts(true)}>
-                  <Code2 className="h-4 w-4" />
-                  Saved Scripts
-                </SidebarItem>
-              </div>
-              
-              <div className="mt-4">
-                <ChatSessionList
-                  sessions={sessions}
-                  currentSessionId={currentSessionId}
-                  characters={characters}
-                  getSessionsByDateGroup={getSessionsByDateGroup}
-                  sortedSessions={sortedSessions}
-                  onLoadSession={loadSession}
-                  onRenameSession={renameSession}
-                  onDeleteSession={deleteSession}
-                  onDuplicateSession={duplicateSession}
-                  onExportSessions={exportSessions}
-                  onImportSessions={importSessions}
-                  onExportSession={exportSession}
-                  isLoadingSession={isLoadingSession}
-                />
-              </div>
-            </SidebarContent>
-          </Sidebar>
+          <div className="mt-4 min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+            <ChatSessionList
+              currentSessionId={view === 'chat' ? currentSessionId : null}
+              characters={characters}
+              getSessionsByDateGroup={getSessionsByDateGroup}
+              onLoadSession={openSession}
+              onRenameSession={renameSession}
+              onDeleteSession={deleteSession}
+              onDuplicateSession={duplicateSession}
+              onExportSession={exportSession}
+              isLoadingSession={isLoadingSession}
+            />
+          </div>
+
+          <div className="flex flex-shrink-0 items-center gap-1 border-t p-2">
+            <button
+              onClick={() => openSettings('persona')}
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-lg p-1.5 text-left transition-colors hover:bg-accent/50"
+              title="Change persona"
+            >
+              <CharacterAvatar avatar={persona?.avatar} name={persona?.name ?? 'You'} className="h-7 w-7 text-[10px]" />
+              <span className="min-w-0">
+                <span className="block truncate text-sm">{persona?.name ?? 'You'}</span>
+              </span>
+            </button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-muted-foreground"
+              aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+              onClick={() => setIsDark(!isDark)}
+            >
+              {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-muted-foreground"
+              aria-label="Settings"
+              title="Settings (Ctrl+,)"
+              onClick={() => openSettings('generation')}
+            >
+              <Settings className="h-4 w-4" />
+            </Button>
+          </div>
         </aside>
       )}
 
-      {/* Main Chat Area */}
-      <main className="flex-1 flex flex-col min-h-0 max-h-screen">
-        {/* Compact Header */}
-        <header className="flex h-12 items-center justify-between px-3 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex-shrink-0">
-          <div className="flex items-center gap-3">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-10 w-10 p-0 touch-manipulation"
-              onClick={() => setSidebarOpen(!sidebarOpen)}
-              aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-            >
-              <Menu className="h-4 w-4" />
+      <main className={cn('relative flex min-h-0 min-w-0 flex-1 flex-col', settings.ambience && view === 'chat' && 'ambience')}>
+        <header className="flex h-14 flex-shrink-0 items-center gap-2 px-3">
+          {!sidebarOpen && (
+            <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground" aria-label="Show sidebar" onClick={() => setSidebarOpen(true)}>
+              <PanelLeft className="h-4 w-4" />
             </Button>
-            
-            {/* Logo and Nav */}
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2">
-                <Bot className="h-5 w-5 text-primary" />
-                <span className="font-semibold hidden sm:inline tracking-tight">ChaiChat</span>
-              </div>
-              
-              <div className="hidden sm:flex items-center gap-2.5">
-                <ProviderSelector
-                  connections={connections}
-                  selectedProvider={selectedProvider}
-                  onProviderChange={handleProviderChange}
-                  onManage={() => setShowConnections(true)}
-                  disabled={isLoading}
-                />
+          )}
 
-                <ModelSelector
-                  models={models.filter(m => m.provider === selectedProvider)}
-                  selectedModel={selectedModel}
-                  onModelChange={setSelectedModel}
-                  loading={isModelsLoading}
-                />
-              </div>
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-1">
-            {/* Connection status with better accessibility */}
-            <div className="flex items-center gap-2 mr-2">
-              {selectedConnection && (
-                <div
-                  className="flex items-center gap-1"
-                  title={isConnected ? `Connected to ${selectedConnection.name}` : connectionError ?? 'Not connected'}
-                >
-                  {isConnected ? (
-                    <Wifi className="h-4 w-4 text-emerald-600" />
-                  ) : (
-                    <WifiOff className="h-4 w-4 text-destructive" />
-                  )}
-                  <span className="sr-only">
-                    {isConnected ? 'Connected to' : 'Disconnected from'} {selectedConnection.name}
-                  </span>
+          {view === 'chat' && (
+            <div className="flex min-w-0 items-center gap-2.5">
+              {participants.length > 0 && (
+                <div className="flex shrink-0 -space-x-2">
+                  {participants.slice(0, 3).map((c) => (
+                    <CharacterAvatar key={c.id} avatar={c.avatar} name={c.name} className="h-8 w-8 text-xs ring-2 ring-background" />
+                  ))}
                 </div>
               )}
+              <h1 className="min-w-0 truncate font-display text-lg font-medium">
+                {participants.length > 0 ? participants.map((p) => p.name).join(', ') : currentSession?.title ?? 'Chat'}
+              </h1>
             </div>
-            
-            <Button
-              onClick={reconnect}
-              disabled={isModelsLoading}
-              variant="ghost"
-              size="sm"
-              className="h-8 w-8 p-0 md:h-8 md:w-8 touch-manipulation"
-              aria-label="Refresh models and connections"
-            >
-              <RefreshCw className={`h-4 w-4 ${isModelsLoading ? 'animate-spin' : ''}`} />
-            </Button>
-            
-            {/* Theme toggle */}
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 w-8 p-0 md:h-8 md:w-8 touch-manipulation"
-              onClick={() => setIsDark(!isDark)}
-              aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-            >
-              {isDark ? (
-                <Sun className="h-4 w-4" />
-              ) : (
-                <Moon className="h-4 w-4" />
-              )}
-            </Button>
-            
-            {/* GitHub link */}
-            <Button variant="ghost" size="sm" className="h-8 w-8 p-0 md:h-8 md:w-8 touch-manipulation" asChild>
-              <a
-                href="https://github.com/sanjayvs1/chaichat"
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="View ChaiChat on GitHub"
-              >
-                <Github className="h-4 w-4" />
-              </a>
-            </Button>
-            
-            {isLoading && (
-              <Button
-                onClick={stopGeneration}
-                variant="destructive"
-                size="sm"
-                className="h-8 px-3"
-              >
-                <Square className="h-3 w-3 mr-1" />
-                Stop
+          )}
+
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            <ProviderSelector
+              connections={connections}
+              selectedProvider={selectedProvider}
+              onProviderChange={handleProviderChange}
+              onManage={() => openSettings('connections')}
+              disabled={isLoading}
+            />
+            <ModelSelector
+              models={models.filter(m => m.provider === selectedProvider)}
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
+              loading={isModelsLoading}
+            />
+            <span
+              className={cn('mx-1 h-2 w-2 rounded-full', isConnected ? 'bg-emerald-500' : 'bg-destructive')}
+              role="status"
+              title={isConnected ? `Connected to ${selectedConnection?.name}` : connectionError ?? 'Not connected'}
+              aria-label={isConnected ? 'Connected' : 'Not connected'}
+            />
+            {!isConnected && (
+              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground" disabled={isModelsLoading} aria-label="Try connecting again" onClick={reconnect}>
+                <RefreshCw className={cn('h-4 w-4', isModelsLoading && 'animate-spin')} />
               </Button>
+            )}
+            {view === 'chat' && (
+              <button
+                onClick={() => setMemoryOpen(!memoryOpen)}
+                aria-pressed={memoryOpen}
+                title="Memory and context (Ctrl+M)"
+                className={cn(
+                  'flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground',
+                  memoryOpen && 'bg-accent text-foreground'
+                )}
+              >
+                <svg viewBox="0 0 20 20" className="h-4 w-4 -rotate-90" aria-hidden="true">
+                  <circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
+                  <circle cx="10" cy="10" r="7.5" fill="none" stroke="var(--primary)" strokeWidth="3" strokeLinecap="round" strokeDasharray={`${usage * 47.1} 47.1`} />
+                </svg>
+                {lastPrompt ? formatTokens(lastPrompt.totalTokens) : 'Memory'}
+              </button>
             )}
           </div>
         </header>
 
-        {/* Mobile Provider/Model Selectors */}
-        <div className="sm:hidden flex flex-col gap-2 p-3 border-b bg-muted/20">
-          <ProviderSelector
-            connections={connections}
-            selectedProvider={selectedProvider}
-            onProviderChange={handleProviderChange}
-            onManage={() => setShowConnections(true)}
-            disabled={isLoading}
-          />
-          <ModelSelector
-            models={models.filter(m => m.provider === selectedProvider)}
-            selectedModel={selectedModel}
-            onModelChange={setSelectedModel}
-            loading={isModelsLoading}
-          />
-        </div>
-
-        {/* Collapsible sections with better integration */}
-        {showPromptEditor && (
-          <div className="border-b bg-muted/30 p-3 flex-shrink-0">
-            <div className="max-w-4xl mx-auto flex justify-between items-start gap-4">
-              <SystemPromptEditor value={systemPrompt} onChange={setSystemPrompt} />
-              <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => setShowPromptEditor(false)}>
-                <X className="h-4 w-4" />
-                <span className="sr-only">Close system prompt editor</span>
-              </Button>
-            </div>
+        {view === 'characters' ? (
+          <div className="min-h-0 flex-1">
+            <CharacterGallery
+              characters={characters}
+              error={charactersError}
+              onStartChat={beginChat}
+              onAddToChat={(character) => {
+                setView('chat')
+                selectCharacter(character)
+              }}
+              onCreate={createCharacter}
+              onUpdate={updateCharacter}
+              onDelete={deleteCharacter}
+              onDuplicate={duplicateCharacter}
+              onImport={handleImport}
+            />
           </div>
-        )}
-
-        {showSearch && (
-          <div className="border-b bg-muted/30 p-3 flex-shrink-0">
-            <div className="max-w-4xl mx-auto flex justify-between items-start gap-4">
-              <ChatSearch search={searchChats} loadSession={loadSession} />
-              <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => setShowSearch(false)}>
-                <X className="h-4 w-4" />
-                <span className="sr-only">Close search</span>
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* Auto-connect notice */}
-        {connectionNotice && (
-          <div className="border-b bg-muted/30 px-3 py-2 flex-shrink-0">
-            <div className="max-w-4xl mx-auto flex items-center justify-between gap-4 text-sm text-muted-foreground">
-              <span>{connectionNotice}</span>
-              <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={dismissConnectionNotice}>
-                <X className="h-3.5 w-3.5" />
-                <span className="sr-only">Dismiss</span>
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* Error Display */}
-        {error && (
-          <div className="border-b bg-destructive/10 p-3 flex-shrink-0">
-            <div className="max-w-4xl mx-auto">
-              <Alert variant="destructive">
-                <AlertCircle className="h-4 w-4" />
-                <AlertTitle>Error</AlertTitle>
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            </div>
-          </div>
-        )}
-
-        {/* Messages Area */}
-                  <div
-          ref={messagesContainerRef}
-          className="flex-1 overflow-y-auto min-h-0 max-h-full bg-background relative scrollbar-thin scroll-smooth"
-          id="main-content"
-          tabIndex={-1}
-          aria-label="Chat messages"
-        >
-          {/* Session loading overlay */}
-          {isLoadingSession && (
-            <div className="absolute inset-0 bg-background/80 backdrop-blur-sm z-10 flex items-center justify-center">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <RefreshCw className="h-4 w-4 animate-spin" />
-                <span className="text-sm">Loading session...</span>
+        ) : (
+          <>
+            {connectionNotice && (
+              <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-5 pb-2 text-xs text-muted-foreground">
+                <span className="flex-1">{connectionNotice}</span>
+                <button onClick={dismissConnectionNotice} aria-label="Dismiss"><X className="h-3.5 w-3.5" /></button>
               </div>
-            </div>
-          )}
-          {messagesForRender.length === 0 ? (
-            <div className="flex items-center justify-center h-full p-8">
-              <div className="text-center space-y-6 max-w-2xl">
-                {participants.length > 0 ? (
-                  <div className="flex items-center justify-center gap-3">
-                    {participants.slice(0, 4).map((c) => (
-                      <CharacterAvatar
-                        key={c.id}
-                        avatar={c.avatar}
-                        name={c.name}
-                        className="h-16 w-16 text-2xl"
-                      />
-                    ))}
-                    {participants.length > 4 && (
-                      <div className="h-16 w-16 rounded-full bg-muted flex items-center justify-center text-sm text-muted-foreground">
-                        +{participants.length - 4}
+            )}
+
+            <div className="relative min-h-0 flex-1">
+              <div
+                ref={scrollerRef}
+                onScroll={handleScroll}
+                className="h-full overflow-y-auto"
+                id="main-content"
+                tabIndex={-1}
+                aria-label="Chat messages"
+              >
+                {messages.length === 0 ? (
+                  <EmptyChat
+                    participants={participants}
+                    activeTarget={activeTarget}
+                    characters={characters}
+                    isConnected={isConnected}
+                    isConnecting={isModelsLoading}
+                    connectionName={selectedConnection?.name}
+                    connectionError={connectionError}
+                    onConnect={() => openSettings('connections')}
+                    onPick={beginChat}
+                    onBrowse={() => setView('characters')}
+                  />
+                ) : (
+                  <div className={cn('mx-auto w-full max-w-3xl px-5 pt-2 pb-6 transition-opacity', isLoadingSession && 'opacity-50')}>
+                    {messages.length > visibleCount && (
+                      <div className="mb-2 text-center">
+                        <Button variant="ghost" size="sm" className="text-xs text-muted-foreground" onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}>
+                          Show earlier messages
+                        </Button>
                       </div>
                     )}
-                  </div>
-                ) : (
-                  <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
-                    <Bot className="h-8 w-8 text-primary" />
-                  </div>
-                )}
-                <div className="space-y-3">
-                  <h1 className="text-2xl font-semibold">
-                    {!isConnected
-                      ? isModelsLoading
-                        ? 'Connecting...'
-                        : selectedConnection
-                          ? `Connect to ${selectedConnection.name}`
-                          : 'Add a connection'
-                      : activeTarget
-                        ? `Chat with ${activeTarget.name}`
-                        : selectedModel
-                          ? `Chat with ${selectedModel}`
-                          : 'Select a model to start'
-                    }
-                  </h1>
-                  <p className="text-muted-foreground text-base leading-relaxed">
-                    {!isConnected
-                      ? isModelsLoading
-                        ? 'Picking up where you left off'
-                        : selectedConnection
-                          ? connectionError ?? 'Press refresh to connect, or check the connection settings'
-                          : 'Link a local LLM server or a cloud provider to start chatting'
-                      : participants.length > 1
-                        ? `${participants.map((p) => p.name).join(', ')} are in this chat. Pick who to talk to below — each keeps their own memory.`
-                        : activeTarget
-                          ? activeTarget.tagline || activeTarget.description
-                          : selectedModel
-                            ? 'Ask me anything and I\'ll help you out!'
-                            : 'Choose a model from the dropdown above to begin'
-                    }
-                  </p>
-                </div>
-                {!isConnected && !isModelsLoading && (
-                  <Button variant="outline" onClick={() => setShowConnections(true)}>
-                    <Plug className="h-4 w-4" />
-                    Manage connections
-                  </Button>
-                )}
-                {selectedModel && isConnected && (
-                  <div className="space-y-4">
-                    <p className="text-sm text-muted-foreground font-medium">Try these examples:</p>
-                     <div className="flex flex-wrap gap-2 justify-center max-w-md">
-                      <Badge
-                        variant="secondary"
-                        className="cursor-pointer hover:bg-primary hover:text-primary-foreground transition-colors"
-                        onClick={() => sendMessage('Hello! How are you?')}
-                      >
-                        Hello! How are you?
-                      </Badge>
-                      <Badge
-                        variant="secondary"
-                        className="cursor-pointer hover:bg-primary hover:text-primary-foreground transition-colors"
-                        onClick={() => sendMessage('Explain quantum computing')}
-                      >
-                        Explain quantum computing
-                      </Badge>
-                      <Badge
-                        variant="secondary"
-                        className="cursor-pointer hover:bg-primary hover:text-primary-foreground transition-colors"
-                        onClick={() => sendMessage('Write a poem about coding')}
-                      >
-                        Write a poem about coding
-                      </Badge>
-                    </div>
+                    {visibleMessages.map((message, index) => {
+                      const isLast = index === visibleMessages.length - 1
+                      return (
+                        <ChatMessage
+                          key={message.id}
+                          message={message}
+                          characters={characters}
+                          persona={persona}
+                          isStreaming={isLoading && message.role === 'assistant' && (isLast || !message.content)}
+                          isLast={isLast}
+                          onSaveScript={handleSaveScript}
+                          onEditMessage={handleEdit}
+                          onResendMessage={handleResend}
+                          onBranchFromMessage={handleBranch}
+                          onDeleteMessage={handleDelete}
+                          onSwipe={handleSwipe}
+                        />
+                      )
+                    })}
                   </div>
                 )}
               </div>
-            </div>
-          ) : (
-            <>
-              {/* Compact Session Indicator */}
-              {/* <SessionIndicator
-                currentSession={getCurrentSession()}
-                messageCount={messages.length}
-                onSaveAsSession={saveCurrentAsSession}
-                className="px-4 py-2"
-              /> */}
-              
-              <div className={`w-full max-w-4xl mx-auto px-2 transition-opacity duration-200 ${isLoadingSession ? 'opacity-50' : 'opacity-100'}`}>
-                {/* Load more messages button */}
-                {messages.length > visibleMessageCount && (
-                  <div className="text-center mb-4">
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      onClick={loadMoreMessages}
-                      className="text-xs"
-                    >
-                      Load {Math.min(50, messages.length - visibleMessageCount)} more messages
-                    </Button>
-                  </div>
-                )}
-                
-                 {messagesForRender.map((message, idx) => {
-                  const isLastAssistant =
-                    message.role === 'assistant' &&
-                    // Find the last assistant message in the list
-                     messagesForRender.slice(idx + 1).findIndex(m => m.role === 'assistant') === -1
-                   const isLast = idx === messagesForRender.length - 1
-                   const isLastUser = 
-                     message.role === 'user' &&
-                     // Find the last user message in the list
-                     messagesForRender.slice(idx + 1).findIndex(m => m.role === 'user') === -1
-                   return (
-                    <div
-                      key={message.id}
-                      ref={(el) => {
-                        if (!el) return
-                        if (isLastAssistant) lastAssistantMessageRef.current = el
-                        if (isLast) lastMessageRef.current = el
-                        if (isLastUser) lastUserMessageRef.current = el
-                      }}
-                    >
-                      <ChatMessage
-                        message={message}
-                        characters={characters}
-                        isStreaming={isLoading && message.role === 'assistant' && isLast}
-                        onSaveScript={handleSaveScript}
-                        onEditMessage={handleMessageEdit}
-                        onResendMessage={handleMessageResend}
-                        onBranchFromMessage={handleMessageBranch}
-                      />
-                    </div>
-                  )
-                })}
-                <div ref={messagesEndRef} />
-              </div>
-            </>
-          )}
-        </div>
 
-        {/* Chat Input Area */}
-        <div className="border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 p-4 flex-shrink-0">
-          <div className="max-w-4xl mx-auto space-y-2">
-            <div className="flex items-center justify-between gap-3">
+              {!isAtBottom && messages.length > 0 && (
+                <button
+                  onClick={() => {
+                    followRef.current = true
+                    scrollToBottom('smooth')
+                  }}
+                  className="rise absolute bottom-3 left-1/2 flex h-8 -translate-x-1/2 items-center gap-1.5 rounded-full border bg-popover px-3 text-xs shadow-md"
+                >
+                  <ArrowDown className="h-3.5 w-3.5" /> Latest
+                </button>
+              )}
+            </div>
+
+            <div className="mx-auto w-full max-w-3xl flex-shrink-0 space-y-1.5 px-5 pb-4">
+              {error && (
+                <div className="flex items-start gap-2 rounded-xl bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span className="min-w-0 flex-1">{error}</span>
+                </div>
+              )}
               <ParticipantsBar
                 participants={participants}
                 activeTargetId={activeTargetId}
+                replyAll={replyAll}
+                onReplyAllChange={setReplyAll}
                 onSelectTarget={selectCharacter}
                 onRemoveParticipant={removeParticipant}
-                onAddParticipant={() => setShowCharacters(true)}
+                onAddParticipant={() => setView('characters')}
                 disabled={isLoading}
               />
-              <div className="flex items-center gap-2 shrink-0">
-                {canContinue && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 gap-1.5 text-xs"
-                    disabled={!selectedModel || !isConnected}
-                    onClick={continueResponse}
-                    title="Let the AI continue its last response"
-                  >
-                    <Play className="h-3 w-3" />
-                    Continue
-                  </Button>
-                )}
-                {participants.length > 1 && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 gap-1.5 text-xs"
-                    disabled={isLoading || !selectedModel || !isConnected}
-                    onClick={() => sendMessage('Hello everyone!', { askAll: true })}
-                    title="Send to every character in this chat — each answers from their own context"
-                  >
-                    <MessagesSquare className="h-3.5 w-3.5" />
-                    Ask all
-                  </Button>
-                )}
-              </div>
+              <ChatInput
+                onSendMessage={handleSend}
+                onStop={stopGeneration}
+                onContinue={continueResponse}
+                onRegenerate={regenerate}
+                onImpersonate={impersonate}
+                onOpenNote={openNote}
+                onSwipeLast={handleSwipeLast}
+                disabled={isLoading || !canGenerate}
+                generating={isLoading}
+                placeholder={placeholder}
+                canNudge={messages.length > 0}
+                canRewrite={canRewrite}
+                draft={impersonation}
+                onDraftTaken={clearImpersonation}
+              />
             </div>
-            <ChatInput
-              onSendMessage={handleSendMessage}
-              onStop={stopGeneration}
-              disabled={isLoading || !selectedModel || !isConnected}
-              generating={isLoading}
-              placeholder={
-                !isConnected
-                  ? selectedConnection
-                    ? `${selectedConnection.name} is not connected...`
-                    : 'Add a connection to start chatting...'
-                  : !selectedModel
-                    ? 'Select a model first...'
-                    : activeTarget
-                      ? `Message ${activeTarget.name}...`
-                      : participants.length > 0
-                        ? 'Pick a character to talk to...'
-                        : 'Type your message...'
-              }
-            />
+          </>
+        )}
+
+        {isDraggingCard && (
+          <div className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-primary bg-background/80 backdrop-blur-sm">
+            <p className="font-display text-2xl">Drop a character card</p>
           </div>
-        </div>
+        )}
+
+        {toast && (
+          <div className="rise absolute top-16 left-1/2 z-40 -translate-x-1/2 rounded-full border bg-popover px-4 py-1.5 text-sm shadow-lg" role="status">
+            {toast}
+          </div>
+        )}
       </main>
 
-      {/* Character Management Dialog */}
-      <Dialog open={showCharacters} onOpenChange={setShowCharacters}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto">
-          <DialogTitle asChild>
-            <VisuallyHidden>Character Management</VisuallyHidden>
-          </DialogTitle>
-          <DialogDescription asChild>
-            <VisuallyHidden>Manage, create, edit, or delete characters for chat roleplay.</VisuallyHidden>
-          </DialogDescription>
-          <CharacterList
-            characters={characters}
-            selectedCharacter={selectedCharacter}
-            onSelectCharacter={selectCharacter}
-            onCreateCharacter={createCharacter}
-            onUpdateCharacter={updateCharacter}
-            onDeleteCharacter={deleteCharacter}
-            onDuplicateCharacter={duplicateCharacter}
-            isLoading={isCharactersLoading}
-            error={charactersError}
-          />
-        </DialogContent>
-      </Dialog>
+      {memoryOpen && view === 'chat' && (
+        <MemoryPanel
+          session={currentSession}
+          report={lastPrompt}
+          settings={settings}
+          unsummarized={unsummarized}
+          isSummarizing={isSummarizing}
+          error={memoryError}
+          canUseModel={canGenerate && !isLoading}
+          focusNote={noteFocus}
+          onClose={() => setMemoryOpen(false)}
+          onSummarize={() => summarizeNow()}
+          onSessionChange={updateCurrentSession}
+          onSettingsChange={updateSettings}
+        />
+      )}
 
-      {/* Connection Management Dialog */}
-      <Dialog open={showConnections} onOpenChange={setShowConnections}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-          <DialogTitle asChild>
-            <VisuallyHidden>Connections</VisuallyHidden>
-          </DialogTitle>
-          <DialogDescription asChild>
-            <VisuallyHidden>Add, update, or remove LLM connections and their API keys.</VisuallyHidden>
-          </DialogDescription>
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        actions={paletteActions}
+        characters={characters}
+        sessions={sessions}
+        onOpenCharacter={beginChat}
+        onOpenSession={openSession}
+        search={searchChats}
+      />
+
+      <SettingsDialog
+        open={settingsOpen}
+        section={settingsSection}
+        onSectionChange={setSettingsSection}
+        onOpenChange={setSettingsOpen}
+        settings={settings}
+        onSettingsChange={updateSettings}
+        personas={personas}
+        onSavePersona={savePersona}
+        onDeletePersona={deletePersona}
+        connections={connections}
+        systemPrompt={systemPrompt}
+        onSystemPromptChange={setSystemPrompt}
+        isDark={isDark}
+        onDarkChange={setIsDark}
+        onExportAll={exportSessions}
+        onImportAll={() => importSessions()}
+        connectionsPane={
           <ConnectionManager
             connections={connections}
             presets={presets}
@@ -999,21 +684,91 @@ function Index() {
             onAutoConnectChange={setAutoConnect}
             onChanged={refreshConnections}
           />
-        </DialogContent>
-      </Dialog>
-
-      {/* Saved Scripts Dialog */}
-      <Dialog open={showSavedScripts} onOpenChange={setShowSavedScripts}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-hidden">
-          <DialogTitle asChild>
-            <VisuallyHidden>Saved Scripts</VisuallyHidden>
-          </DialogTitle>
-          <DialogDescription asChild>
-            <VisuallyHidden>View, run, and manage saved Python scripts from chat responses.</VisuallyHidden>
-          </DialogDescription>
-          <SavedScripts />
-        </DialogContent>
-      </Dialog>
+        }
+      />
     </div>
   )
-} 
+}
+
+function EmptyChat({
+  participants,
+  activeTarget,
+  characters,
+  isConnected,
+  isConnecting,
+  connectionName,
+  connectionError,
+  onConnect,
+  onPick,
+  onBrowse,
+}: {
+  participants: Character[]
+  activeTarget?: Character
+  characters: Character[]
+  isConnected: boolean
+  isConnecting: boolean
+  connectionName?: string
+  connectionError: string | null
+  onConnect: () => void
+  onPick: (character: Character) => void
+  onBrowse: () => void
+}) {
+  if (!isConnected && !isConnecting) {
+    return (
+      <div className="flex h-full items-center justify-center p-8">
+        <div className="rise max-w-sm text-center">
+          <h2 className="font-display text-3xl font-medium tracking-tight">
+            {connectionName ? `${connectionName} is offline` : 'Connect a model'}
+          </h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {connectionName ? connectionError ?? 'Check that it is running.' : 'Point ChaiChat at a local server or a cloud provider to start chatting.'}
+          </p>
+          <Button className="mt-5" onClick={onConnect}>
+            <Plug className="h-4 w-4" /> Manage connections
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  if (participants.length > 0) {
+    return (
+      <div className="flex h-full items-center justify-center p-8">
+        <div className="rise max-w-md text-center">
+          <div className="flex justify-center -space-x-4">
+            {participants.slice(0, 4).map((c) => (
+              <CharacterAvatar key={c.id} avatar={c.avatar} name={c.name} className="h-32 w-24 rounded-2xl text-4xl shadow-lg ring-4 ring-background" />
+            ))}
+          </div>
+          <h2 className="mt-5 font-display text-3xl font-medium tracking-tight">{activeTarget?.name ?? participants[0].name}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{activeTarget?.tagline || 'Say something to begin.'}</p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex h-full items-center justify-center p-8">
+      <div className="rise w-full max-w-2xl">
+        <h2 className="text-center font-display text-4xl font-medium tracking-tight">Who's it going to be?</h2>
+        <p className="mt-2 text-center text-sm text-muted-foreground">Pick someone to talk to, or just start typing.</p>
+        <div className="mt-6 grid grid-cols-4 gap-3">
+          {characters.slice(0, 4).map((character) => (
+            <button
+              key={character.id}
+              onClick={() => onPick(character)}
+              className="group relative aspect-[3/4] overflow-hidden rounded-2xl shadow-sm transition-transform duration-200 hover:-translate-y-1 hover:shadow-lg"
+            >
+              <CharacterAvatar avatar={character.avatar} name={character.name} className="h-full w-full rounded-none text-5xl" />
+              <span className="portrait-fade absolute inset-0" />
+              <span className="absolute inset-x-0 bottom-0 p-2.5 text-left font-display text-base leading-tight text-white">{character.name}</span>
+            </button>
+          ))}
+        </div>
+        <div className="mt-4 text-center">
+          <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={onBrowse}>See everyone</Button>
+        </div>
+      </div>
+    </div>
+  )
+}

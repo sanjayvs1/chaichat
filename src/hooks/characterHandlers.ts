@@ -1,5 +1,6 @@
-import type { Character, ChatSession, ChatMessage } from "../types/chat";
+import type { Character, ChatSession, ChatMessage, Persona } from "../types/chat";
 import { dbService } from "../services/database";
+import { greetingMessage, hasGreeting } from "./sessionHandlers";
 
 export interface CharacterHandlerParams {
   setCharacters: React.Dispatch<React.SetStateAction<Character[]>>;
@@ -140,7 +141,8 @@ export const addParticipantHandler = async (
   messages: ChatMessage[],
   setActiveTargetId: React.Dispatch<React.SetStateAction<string | null>>,
   setSessions: React.Dispatch<React.SetStateAction<ChatSession[]>>,
-  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>
+  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
+  persona?: Persona
 ) => {
   if (!character) return;
 
@@ -157,18 +159,12 @@ export const addParticipantHandler = async (
   const alreadyInChat = participants.includes(character.id);
 
   // Add greeting when the character joins a conversation they haven't spoken in
-  if (character.greeting && !messages.some((m) => m.characterId === character.id)) {
-    const greetingMessage: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "assistant",
-      content: character.greeting,
-      timestamp: new Date(),
-      characterId: character.id,
-    };
-    setMessages((prev) => [...prev, greetingMessage]);
+  if (hasGreeting(character) && !messages.some((m) => m.characterId === character.id)) {
+    const greeting = greetingMessage(character, persona);
+    setMessages((prev) => [...prev, greeting]);
     if (currentSession && !alreadyInChat) {
       try {
-        await dbService.addMessages(currentSessionId, [greetingMessage]);
+        await dbService.addMessages(currentSessionId, [greeting]);
       } catch (err) {
         console.error("Failed to persist greeting:", err);
       }

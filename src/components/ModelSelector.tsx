@@ -17,23 +17,19 @@ interface ModelSelectorProps {
 export function ModelSelector({ models, selectedModel, onModelChange, loading }: ModelSelectorProps) {
   if (loading) {
     return (
-      <div className="flex h-8 w-full sm:w-44 items-center rounded-md border border-input bg-background px-3 py-1 text-sm">
-        <span className="text-muted-foreground">Loading...</span>
-      </div>
+      <div className="flex h-8 items-center px-2 text-xs text-muted-foreground">Loading models</div>
     )
   }
 
   if (models.length === 0) {
     return (
-      <div className="flex h-8 w-full sm:w-44 items-center rounded-md border border-input bg-muted/40 px-3 py-1 text-sm">
-        <span className="text-muted-foreground text-xs">No models available</span>
-      </div>
+      <div className="flex h-8 items-center px-2 text-xs text-muted-foreground">No models</div>
     )
   }
 
   return (
     <Select value={selectedModel} onValueChange={onModelChange}>
-      <SelectTrigger className="w-full sm:w-44 h-8 text-sm" aria-label="Select AI model">
+      <SelectTrigger className="h-8 w-auto max-w-52 gap-1 border-0 bg-transparent px-2 text-xs shadow-none dark:bg-transparent" aria-label="Select AI model">
         <SelectValue placeholder="Select model">
           <span className="truncate">{selectedModel}</span>
         </SelectValue>

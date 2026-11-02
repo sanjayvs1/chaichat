@@ -1,14 +1,15 @@
-import type { ChatSession, ChatMessage, Character, AIProvider } from "../types/chat";
+import type { ChatSession, ChatMessage, Character, AIProvider, Persona } from "../types/chat";
 import { dbService } from "../services/database";
+import { resolveGreeting } from "../lib/prompt";
 
 export interface SessionHandlerParams {
   sessions: ChatSession[];
   setSessions: React.Dispatch<React.SetStateAction<ChatSession[]>>;
   setCurrentSessionId: React.Dispatch<React.SetStateAction<string | null>>;
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
-  setChatSummary: React.Dispatch<React.SetStateAction<string>>;
   setError: React.Dispatch<React.SetStateAction<string | null>>;
   selectedCharacter?: Character;
+  persona?: Persona;
   selectedProvider: AIProvider;
   selectedModel: string;
   currentSessionId: string | null;
@@ -24,6 +25,25 @@ export function getSessionParticipantIds(session: ChatSession | undefined | null
   return session.characterId ? [session.characterId] : [];
 }
 
+/** The character's opening line, with any alternates ready to swipe through. */
+export function greetingMessage(character: Character, persona?: Persona): ChatMessage {
+  const versions = [character.greeting, ...(character.alternateGreetings ?? [])]
+    .filter((text): text is string => !!text?.trim())
+    .map((text) => resolveGreeting(text, character, persona));
+  return {
+    id: crypto.randomUUID(),
+    role: "assistant",
+    content: versions[0],
+    timestamp: new Date(),
+    characterId: character.id,
+    swipes: versions.length > 1 ? versions : undefined,
+    swipeIndex: versions.length > 1 ? 0 : undefined,
+  };
+}
+
+export const hasGreeting = (character: Character) =>
+  !!character.greeting?.trim() || !!character.alternateGreetings?.some((text) => text.trim());
+
 /**
  * Adds greeting messages for characters that have one and haven't spoken yet.
  * Used when starting a fresh chat with characters.
@@ -32,19 +52,12 @@ async function seedGreetings(
   sessionId: string,
   participants: Character[],
   existingMessages: ChatMessage[],
-  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>
+  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
+  persona?: Persona
 ): Promise<void> {
-  const greetings: ChatMessage[] = participants
-    .filter((c) => c.greeting && !existingMessages.some((m) => m.characterId === c.id))
-    .map(
-      (c): ChatMessage => ({
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: c.greeting!,
-        timestamp: new Date(),
-        characterId: c.id,
-      })
-    );
+  const greetings = participants
+    .filter((c) => hasGreeting(c) && !existingMessages.some((m) => m.characterId === c.id))
+    .map((c) => greetingMessage(c, persona));
 
   if (greetings.length === 0) return;
 
@@ -86,16 +99,12 @@ export const clearChatHandler = async (params: SessionHandlerParams, participant
   const {
     sessions,
     currentSessionId,
-    setChatSummary,
     setSessions,
     setCurrentSessionId,
     setMessages,
     setError
   } = params;
-  
-  // Clear chat summary to prevent context bleeding into new conversations
-  setChatSummary("");
-  
+
   // Carry the current cast of characters into the fresh chat by default
   const previousSession = sessions.find((s) => s.id === currentSessionId);
   const carriedParticipants =
@@ -114,7 +123,7 @@ export const clearChatHandler = async (params: SessionHandlerParams, participant
       carriedParticipants.includes(c.id)
     );
     if (greeters.length > 0) {
-      await seedGreetings(newSession.id, greeters, [], params.setMessages);
+      await seedGreetings(newSession.id, greeters, [], params.setMessages, params.persona);
     }
   }
 };
@@ -134,15 +143,11 @@ export const loadSessionHandler = async (
   const {
     isSwitchingSessionRef,
     setCurrentSessionId,
-    setChatSummary,
     sessions,
     setMessages
   } = params;
-  
+
   isSwitchingSessionRef.current = true;
-  
-  // Clear chat summary when switching sessions to prevent context bleeding
-  setChatSummary("");
 
   // First check if session is already in memory (sessions array)
   let session = sessions.find((s) => s.id === sessionId);

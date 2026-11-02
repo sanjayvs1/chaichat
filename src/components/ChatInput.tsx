@@ -1,167 +1,162 @@
 import { useState, useRef, useEffect, memo } from 'react'
-import { Send, Loader2, Square } from 'lucide-react'
+import { ArrowUp, FastForward, MoreHorizontal, PenLine, RefreshCw, Square, StickyNote, UserRound } from 'lucide-react'
 import { Button } from './ui/button'
 import { Textarea } from './ui/textarea'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 
 interface ChatInputProps {
   onSendMessage: (message: string) => void
   onStop?: () => void
+  onContinue?: () => void
+  onRegenerate?: () => void
+  onImpersonate?: () => void
+  onOpenNote?: () => void
+  onSwipeLast?: (direction: -1 | 1) => void
   disabled?: boolean
   /** True only while a response is actively streaming */
   generating?: boolean
   placeholder?: string
+  /** An empty send asks for a reply without saying anything */
+  canNudge?: boolean
+  /** The last message is the assistant's, so it can be extended or rewritten */
+  canRewrite?: boolean
+  /** Draft written by impersonate */
+  draft?: { text: string } | null
+  onDraftTaken?: () => void
 }
 
-export const ChatInput = memo(function ChatInput({ onSendMessage, onStop, disabled, generating = false, placeholder = "Message..." }: ChatInputProps) {
+const MAX_HEIGHT = 200
+
+export const ChatInput = memo(function ChatInput({
+  onSendMessage,
+  onStop,
+  onContinue,
+  onRegenerate,
+  onImpersonate,
+  onOpenNote,
+  onSwipeLast,
+  disabled,
+  generating = false,
+  placeholder = 'Message...',
+  canNudge = false,
+  canRewrite = false,
+  draft,
+  onDraftTaken,
+}: ChatInputProps) {
   const [message, setMessage] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
+  useEffect(() => {
+    if (draft) setMessage(draft.text)
+  }, [draft])
+
+  // Hand the box back once the draft stopped streaming, so typing isn't overwritten
+  useEffect(() => {
+    if (draft && !generating) {
+      onDraftTaken?.()
+      textareaRef.current?.focus()
+    }
+  }, [draft, generating, onDraftTaken])
+
+  // Ready to type as soon as a reply finishes
+  useEffect(() => {
+    if (!disabled) textareaRef.current?.focus()
+  }, [disabled])
+
   const handleSubmit = () => {
-    if (message.trim() && !disabled) {
-      onSendMessage(message.trim())
-      setMessage('')
-      // Reset textarea height after sending
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto'
-      }
+    if (disabled) return
+    const text = message.trim()
+    if (!text && !canNudge) return
+    onSendMessage(text)
+    setMessage('')
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
+      e.preventDefault()
+      handleSubmit()
+    } else if (!message && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && onSwipeLast) {
+      e.preventDefault()
+      onSwipeLast(e.key === 'ArrowLeft' ? -1 : 1)
     }
   }
 
-  const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter') {
-      if (e.shiftKey || e.ctrlKey) {
-        // Allow new line with Shift+Enter or Ctrl+Enter
-        return
-      } else {
-        // Send message with Enter
-        e.preventDefault()
-        handleSubmit()
-      }
-    }
-  }
-
-  // Auto-resize textarea with smoother transitions
   useEffect(() => {
     const textarea = textareaRef.current
-    if (textarea) {
-      // Reset height to get accurate scrollHeight
-      textarea.style.height = 'auto'
-      
-      // Calculate new height
-      const scrollHeight = textarea.scrollHeight
-      const minHeight = 36 // Reduced from 40px
-      const maxHeight = 160 // Reduced from 200px for more compact design
-      
-      const newHeight = Math.min(Math.max(scrollHeight, minHeight), maxHeight)
-      textarea.style.height = newHeight + 'px'
-      
-      // Show scrollbar only when at max height
-      textarea.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden'
-    }
+    if (!textarea) return
+    textarea.style.height = 'auto'
+    const scrollHeight = textarea.scrollHeight
+    textarea.style.height = `${Math.min(scrollHeight, MAX_HEIGHT)}px`
+    textarea.style.overflowY = scrollHeight > MAX_HEIGHT ? 'auto' : 'hidden'
   }, [message])
 
-  // Focus management for accessibility
-  const handleFocus = () => {
-    if (textareaRef.current) {
-      textareaRef.current.focus()
-    }
-  }
-
-  const canSend = message.trim().length > 0 && !disabled && message.length <= 4000
-  const isNearLimit = message.length > 3000
-  const isOverLimit = message.length > 4000
+  const canSend = !disabled && (message.trim().length > 0 || canNudge)
 
   return (
-    <div className="relative">
-      <div 
-        className="flex items-end gap-2.5 p-3 bg-muted/30 border border-border rounded-lg focus-within:border-ring transition-colors"
-        onClick={handleFocus}
-        role="group"
-        aria-label="Message input"
-      >
-        <div className="flex-1 min-w-0">
-          <Textarea
-            ref={textareaRef}
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={handleKeyPress}
-            placeholder={placeholder}
-            disabled={disabled}
-            autoFocus
-            aria-label="Type your message"
-            aria-describedby="chat-input-help"
-            id="chat-input"
-            className="min-h-[36px] max-h-[160px] resize-none border-0 bg-transparent p-2 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground"
-            style={{ 
-              lineHeight: '1.4',
-              overflowY: 'hidden' // Will be set by useEffect
-            }}
-          />
-        </div>
-        
-        {generating && onStop ? (
-          <Button
-            onClick={onStop}
-            size="icon"
-            className="h-9 w-9 shrink-0 rounded-md"
-            variant="destructive"
-            aria-label="Stop generating"
-            title="Stop generating"
-          >
-            <Square className="h-3.5 w-3.5" />
+    <div
+      className="flex items-end gap-1.5 rounded-2xl border bg-card/90 p-2 shadow-[0_8px_30px_-16px_oklch(0_0_0/0.5)] backdrop-blur transition-[border-color,box-shadow] focus-within:border-primary/50 focus-within:shadow-[0_8px_30px_-14px_var(--primary)]"
+      role="group"
+      aria-label="Message input"
+    >
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0 rounded-xl text-muted-foreground" aria-label="More actions">
+            <MoreHorizontal className="h-4 w-4" />
           </Button>
-        ) : (
-          <Button
-            onClick={handleSubmit}
-            disabled={!canSend || isOverLimit}
-            size="icon"
-            className="h-9 w-9 shrink-0 rounded-md"
-            variant={canSend ? "default" : "ghost"}
-            aria-label={canSend ? "Send message" : "Enter a message to send"}
-          >
-            <Send className="h-4 w-4" />
-          </Button>
-        )}
-      </div>
-      
-      {/* Accessible help text and character count */}
-      <div 
-        id="chat-input-help" 
-        className="flex justify-between items-center mt-2 px-1.5 text-[11px] text-muted-foreground"
-        aria-live="polite"
-      >
-        <div className="flex items-center gap-4">
-          {generating && (
-            <span className="text-orange-500 flex items-center gap-1" role="status" aria-live="polite">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              Generating...
-            </span>
-          )}
-        </div>
-        
-        {(message.length > 0 || isNearLimit) && (
-          <div className="flex items-center gap-2">
-            <span 
-              className={
-                isOverLimit 
-                  ? 'text-destructive font-medium' 
-                  : isNearLimit 
-                    ? 'text-orange-500' 
-                    : ''
-              }
-              role={isOverLimit ? "alert" : undefined}
-              aria-live={isNearLimit ? "polite" : undefined}
-            >
-              {message.length}/4000
-            </span>
-            {isOverLimit && (
-              <span className="text-destructive text-xs" role="alert">
-                Too long
-              </span>
-            )}
-          </div>
-        )}
-      </div>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" side="top" className="w-56">
+          <DropdownMenuItem disabled={disabled || !canRewrite} onClick={onContinue}>
+            <FastForward className="mr-2 h-4 w-4" /> Continue last reply
+          </DropdownMenuItem>
+          <DropdownMenuItem disabled={disabled || !canRewrite} onClick={onRegenerate}>
+            <RefreshCw className="mr-2 h-4 w-4" /> Write another version
+          </DropdownMenuItem>
+          <DropdownMenuItem disabled={disabled} onClick={onImpersonate}>
+            <UserRound className="mr-2 h-4 w-4" /> Write my reply for me
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onOpenNote}>
+            <StickyNote className="mr-2 h-4 w-4" /> Author's note
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <Textarea
+        ref={textareaRef}
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        onKeyDown={handleKeyDown}
+        placeholder={placeholder}
+        disabled={disabled}
+        autoFocus
+        aria-label="Type your message"
+        id="chat-input"
+        rows={1}
+        className="min-h-9 flex-1 resize-none border-0 bg-transparent px-1 py-2 text-[15px] leading-snug shadow-none focus-visible:ring-0 focus-visible:outline-none dark:bg-transparent"
+      />
+
+      {generating && onStop ? (
+        <Button
+          onClick={onStop}
+          size="icon"
+          className="h-9 w-9 shrink-0 rounded-xl"
+          variant="secondary"
+          aria-label="Stop generating"
+          title="Stop generating"
+        >
+          <Square className="h-3.5 w-3.5 fill-current" />
+        </Button>
+      ) : (
+        <Button
+          onClick={handleSubmit}
+          disabled={!canSend}
+          size="icon"
+          className="h-9 w-9 shrink-0 rounded-xl"
+          aria-label={message.trim() ? 'Send message' : 'Ask for a reply'}
+          title={message.trim() ? 'Send' : canNudge ? 'Let them keep talking' : 'Send'}
+        >
+          {message.trim() || !canNudge ? <ArrowUp className="h-4 w-4" /> : <PenLine className="h-4 w-4" />}
+        </Button>
+      )}
     </div>
   )
 })

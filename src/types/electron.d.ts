@@ -6,13 +6,18 @@ import {
   Character,
   CharacterMemory,
   ConnectionInput,
+  GenerationParams,
   LLMChatEvent,
   LLMConnection,
   LLMResult,
   LLMState,
   LegacyLLMSettings,
+  Persona,
   SavedScript,
   ScriptExecutionResult,
+  VectorMatch,
+  VectorScope,
+  VectorSource,
 } from './chat'
 
 export interface ElectronAPI {
@@ -46,7 +51,12 @@ export interface ElectronAPI {
     getAllMemories: () => Promise<CharacterMemory[]>
     updateMemory: (memoryId: string, updates: Partial<CharacterMemory>) => Promise<boolean>
     deleteMemory: (memoryId: string) => Promise<boolean>
-    
+
+    // Persona operations
+    getAllPersonas: () => Promise<Persona[]>
+    savePersona: (persona: Persona) => Promise<string>
+    deletePersona: (personaId: string) => Promise<boolean>
+
     exportSessions: () => Promise<ExportData>
     importSessions: (data: ExportData) => Promise<number>
     exportToFile: () => Promise<void>
@@ -68,12 +78,37 @@ export interface ElectronAPI {
     testConnection: (draft: ConnectionInput) => Promise<LLMResult<{ modelCount: number }>>
     detectLocalServers: () => Promise<Array<{ baseUrl: string; modelCount: number }>>
     listModels: (id: AIProvider) => Promise<LLMResult<{ models: Array<Omit<AIModel, 'provider'>> }>>
+    listEmbeddingModels: (id: AIProvider) => Promise<LLMResult<{ models: Array<Omit<AIModel, 'provider'>> }>>
     startChat: (
       requestId: string,
-      request: { connectionId: AIProvider; model: string; messages: Array<Pick<ChatMessage, 'role' | 'content'>> }
+      request: {
+        connectionId: AIProvider
+        model: string
+        messages: Array<Pick<ChatMessage, 'role' | 'content'>>
+        params?: Partial<GenerationParams>
+      }
     ) => Promise<void>
     abortChat: (requestId: string) => Promise<void>
     onChatEvent: (requestId: string, callback: (event: LLMChatEvent) => void) => () => void
+  }
+
+  vectors: {
+    sync: (request: {
+      sessionId: string
+      messages: Array<Pick<ChatMessage, 'id' | 'content'>>
+      source: VectorSource
+    }) => Promise<LLMResult<{ embedded: number }>>
+    query: (request: {
+      sessionId: string
+      characterId?: string
+      scope: VectorScope
+      text: string
+      topK: number
+      excludeIds: string[]
+      source: VectorSource
+    }) => Promise<LLMResult<{ matches: VectorMatch[] }>>
+    stats: (sessionId: string, source: VectorSource) => Promise<LLMResult<{ count: number }>>
+    purge: (sessionId: string) => Promise<LLMResult<{ removed: number }>>
   }
 
   showSaveDialog: (options: Electron.SaveDialogOptions) => Promise<Electron.SaveDialogReturnValue>
@@ -95,20 +130,7 @@ export interface ExportData {
   sessions: ChatSession[]
   characters?: Character[]
   memories?: CharacterMemory[]
-}
-
-export interface ChatSession {
-  id: string
-  title: string
-  createdAt: string
-  messages: ChatMessage[]
-}
-
-export interface ChatMessage {
-  id: string
-  role: 'user' | 'assistant' | 'system'
-  content: string
-  timestamp: Date
+  personas?: Persona[]
 }
 
 declare global {
